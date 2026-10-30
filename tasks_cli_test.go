@@ -218,6 +218,42 @@ func TestSignCommandFailureAndResponseSaveFailure(t *testing.T) {
 	}
 }
 
+func TestSignCommandDefaultsToAllowedPlace(t *testing.T) {
+	var queries, submissions atomic.Int32
+	base, session := taskCLIFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/qdgj/api/sm-registration/qdgjQdrw/queryQdrw":
+			queries.Add(1)
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || string(body["rwid"]) != `"task"` || string(body["pcid"]) != `"batch"` {
+				t.Errorf("wrong default location query: %v (%v)", body, err)
+			}
+			fmt.Fprint(w, `{"code":200,"data":{"list":[{"rwid":"task","pcid":"batch","qddds":[{"qddd":"fixture building","qdzx":"fixture campus","jdzb":10.5,"wdzb":20.5,"yxbj":1000}]}]}}`)
+		case "/qdgj/api/sm-registration/qdgjQdrw/startSign":
+			submissions.Add(1)
+			var body struct {
+				Address   string  `json:"qddd"`
+				Longitude float64 `json:"jdzb"`
+				Latitude  float64 `json:"wdzb"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body.Address != "fixture building fixture campus" || body.Longitude < 10.48 || body.Longitude > 10.52 || body.Latitude < 20.48 || body.Latitude > 20.52 || (body.Longitude == 10.5 && body.Latitude == 20.5) {
+				t.Errorf("wrong default location payload: %+v", body)
+			}
+			fmt.Fprint(w, `{"code":200,"data":{}}`)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+	})
+	var output bytes.Buffer
+	err := run([]string{"sign", "-base-url", base, "-session", session, "-rwid", "task", "-pcid", "batch"}, strings.NewReader(""), &output, io.Discard)
+	if err != nil || !strings.Contains(output.String(), "签到成功") || queries.Load() != 1 || submissions.Load() != 1 {
+		t.Fatalf("default sign failed: queries=%d submissions=%d output=%s err=%v", queries.Load(), submissions.Load(), &output, err)
+	}
+}
+
 type closedOutput struct{}
 
 func (closedOutput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }

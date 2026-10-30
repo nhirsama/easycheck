@@ -88,7 +88,15 @@ go run . detail -rwid '<task-id>' -pcid '<batch-id>' -out tasks-session.json
 
 `list` 展示分页、任务状态和 `rwid`/`pcid`；`detail` 展示时间、位置规则、允许地点及照片要求。`detail` 的 `-pcid` 可省略，此时按任务 ID 查询。`list`、`detail`、`sign` 均支持 `-json` 输出完整 JSON、`-out` 以 `0600` 权限保存原始响应。所有子命令都支持 `-base-url`、`-session` 和 `-timeout`。
 
-传入列表中的任务、批次以及实际定位，提交一次签到：
+传入列表中的任务和批次，使用任务允许地点提交一次签到：
+
+```sh
+go run . sign -rwid '<task-id>' -pcid '<batch-id>'
+```
+
+默认先查询当前批次详情，选择第一个具有有效地址、经纬度和正数半径的允许地点，将地点名称与文字地址合并为签到地址。每次执行都在该地点半径的 90% 内随机生成坐标，保留 10% 的边界余量；地点信息缺失时返回错误。
+
+自定义定位时同时传入三个参数：
 
 ```sh
 go run . sign \
@@ -97,9 +105,9 @@ go run . sign \
   -longitude '<actual-longitude>' -latitude '<actual-latitude>'
 ```
 
-经度、纬度必须显式传入，范围分别为 `[-180, 180]` 和 `[-90, 90]`。需要照片时添加 `-photo-id '<uploaded-photo-id>'`，使用已上传的照片标识。范围外签到使用 `-outside-range -remark '<remark>'`，是否允许该分支以服务端任务规则为准。
+自定义定位会校验地址非空、经纬度为有限数字，经度与纬度范围分别为 `[-180, 180]` 和 `[-90, 90]`。需要照片时添加 `-photo-id '<uploaded-photo-id>'`，使用已上传的照片标识。范围外签到使用 `-outside-range -remark '<remark>'`，是否允许该分支以服务端任务规则为准。
 
-`sign` 调用包的 `SignIn`，每次执行提交一次请求。超时或连接中断后，可用 `detail` 核对批次状态。查询和签到命令加载已有会话，会话过期时重新执行 `login`。
+`sign` 调用包的 `SignIn`，默认执行一次详情查询和一次签到提交；自定义定位时直接提交一次签到。超时或连接中断后，可用 `detail` 核对批次状态。查询和签到命令加载已有会话，会话过期时重新执行 `login`。
 
 原独立查询入口仍可使用：
 

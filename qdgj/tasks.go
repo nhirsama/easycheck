@@ -150,7 +150,7 @@ func (c *Client) GetTask(ctx context.Context, taskID, batchID string) (*TaskDeta
 	return nil, ErrTaskNotFound
 }
 
-// Location 保存调用方提供的实际定位地址、经度和纬度。
+// Location 保存签到地址、经度和纬度。
 type Location struct {
 	Address   string
 	Longitude float64
@@ -158,12 +158,14 @@ type Location struct {
 }
 
 type SignInRequest struct {
-	TaskID       string
-	BatchID      string
-	Location     Location
-	PhotoID      *string // 照片文件标识，nil 编码为 JSON null。
-	OutsideRange bool
-	Remark       string // 范围外签到的必填备注，长度上限为 100 个 UTF-16 字符。
+	TaskID   string
+	BatchID  string
+	Location Location
+	// UseAllowedLocation 从任务允许地点的地址、中心和半径生成范围内的随机定位。
+	UseAllowedLocation bool
+	PhotoID            *string // 照片文件标识，nil 编码为 JSON null。
+	OutsideRange       bool
+	Remark             string // 范围外签到的必填备注，长度上限为 100 个 UTF-16 字符。
 }
 
 type signPayload struct {
@@ -179,15 +181,20 @@ type signPayload struct {
 }
 
 // SignIn 根据任务、批次和定位信息发送一次签到请求。
+// UseAllowedLocation 为 true 时先读取批次详情并生成随机定位。
 // TaskID/BatchID 须从最新任务查询取得；成功条件为服务端 code == 200。
 // 请求超时或连接中断后，可通过 GetTask 核对任务状态。
 func (c *Client) SignIn(ctx context.Context, request SignInRequest) (*Response, error) {
 	if strings.TrimSpace(request.TaskID) == "" || strings.TrimSpace(request.BatchID) == "" {
 		return nil, errors.New("TaskID 和 BatchID 不能为空")
 	}
-	loc := request.Location
-	if strings.TrimSpace(loc.Address) == "" || math.IsNaN(loc.Longitude) || math.IsInf(loc.Longitude, 0) || math.IsNaN(loc.Latitude) || math.IsInf(loc.Latitude, 0) || loc.Longitude < -180 || loc.Longitude > 180 || loc.Latitude < -90 || loc.Latitude > 90 {
-		return nil, errors.New("须提供定位地址及有效的经纬度")
+	if request.UseAllowedLocation && request.Location != (Location{}) {
+		return nil, errors.New("UseAllowedLocation 和 Location 请择一配置")
+	}
+	if !request.UseAllowedLocation {
+		if err := request.Location.validate(); err != nil {
+			return nil, err
+		}
 	}
 	if request.OutsideRange {
 		if strings.TrimSpace(request.Remark) == "" || len(utf16.Encode([]rune(request.Remark))) > 100 {
@@ -200,6 +207,17 @@ func (c *Client) SignIn(ctx context.Context, request SignInRequest) (*Response, 
 	if err != nil {
 		return nil, err
 	}
+	loc := request.Location
+	if request.UseAllowedLocation {
+		task, err := c.GetTask(ctx, request.TaskID, request.BatchID)
+		if err != nil {
+			return nil, fmt.Errorf("读取签到允许地点：%w", err)
+		}
+		loc, err = randomAllowedLocation(task.AllowedLocations)
+		if err != nil {
+			return nil, err
+		}
+	}
 	payload := signPayload{TaskID: request.TaskID, BatchID: request.BatchID, UserID: userID,
 		Address: loc.Address, PhotoID: request.PhotoID, Longitude: loc.Longitude, Latitude: loc.Latitude}
 	if request.OutsideRange {
@@ -211,4 +229,11 @@ func (c *Client) SignIn(ctx context.Context, request SignInRequest) (*Response, 
 		return nil, fmt.Errorf("提交签到：%w", err)
 	}
 	return response, nil
+}
+
+func (loc Location) validate() error {
+	if strings.TrimSpace(loc.Address) == "" || math.IsNaN(loc.Longitude) || math.IsInf(loc.Longitude, 0) || math.IsNaN(loc.Latitude) || math.IsInf(loc.Latitude, 0) || loc.Longitude < -180 || loc.Longitude > 180 || loc.Latitude < -90 || loc.Latitude > 90 {
+		return errors.New("须提供定位地址及有效的经纬度")
+	}
+	return nil
 }

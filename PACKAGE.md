@@ -127,24 +127,26 @@ detail, err := client.GetTask(ctx, taskID, batchID)
 
 `client.SaveSession()` 将当前会话以 `0600` 权限原子写入配置路径；目录须已存在。`client.Session()` 可取得含最新 Cookie 的独立快照，`Session.User()` 返回用户结构；完整登录响应仍保留在 `LoginResponse`。底层 `LoadSession(path)`、`Session.Save(path)` 和 `NewClientFromSession` 仍保留，供需要自定义存储或恢复内存会话的调用方使用。
 
-## 显式定位签到
+## 定位签到
 
-`SignIn` 提交签到，CLI 的 `sign` 子命令调用该方法。包调用示例：
+`SignIn` 提交签到，CLI 的 `sign` 子命令调用该方法。使用任务允许地点的示例：
 
 ```go
 response, err := client.SignIn(ctx, qdgj.SignInRequest{
     TaskID: taskID,
     BatchID: batchID,
-    Location: actualLocation,
+    UseAllowedLocation: true,
     PhotoID: nil,
 })
 ```
 
-`actualLocation` 是调用方获得的实际定位，类型为 `qdgj.Location`，包含 `Address`、`Longitude`、`Latitude`。包不使用允许地点中心或历史坐标自动填充。无照片时 `PhotoID: nil` 编码为 JSON null；需要照片时传入已取得的有效文件值。
+`UseAllowedLocation: true` 会查询当前批次详情，从第一个有效的允许地点读取地址、中心经纬度和半径。地址由地点名称和文字地址合并，坐标每次在半径的 90% 内随机生成。该地点的地址、经纬度和正数半径须完整有效。
+
+传入 `Location: qdgj.Location{Address: address, Longitude: longitude, Latitude: latitude}` 可使用自定义定位，此时 `UseAllowedLocation` 保持 false。两种定位来源择一使用。自定义定位会校验地址非空、坐标为有限数字，经度范围为 `[-180, 180]`、纬度范围为 `[-90, 90]`。无照片时 `PhotoID: nil` 编码为 JSON null；需要照片时传入已取得的有效文件值。
 
 范围外分支使用 `OutsideRange: true` 及必填 `Remark`，备注最多 100 个 UTF-16 字符；是否允许该分支取决于服务端任务规则。普通提交不附加范围外字段。
 
-方法不隐式查询，不自动重试或跟随重定向。超时或连接中断时，调用方可先用 `GetTask` 核对服务器状态。二维码签到和照片上传尚未封装。
+默认地点模式执行一次详情查询，自定义定位模式直接提交；签到提交均为一次。超时或连接中断时，调用方可先用 `GetTask` 核对服务器状态。二维码签到和照片上传尚未封装。
 
 ## 错误处理
 

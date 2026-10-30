@@ -60,7 +60,7 @@ const cliUsage = `用法：easycheck <命令> [选项]
   check   检查手机端入口和验证码状态
   list    列出签到任务，支持分页
   detail  查询任务及批次详情
-  sign    根据任务、批次和实际定位提交一次签到
+  sign    从任务允许地点生成定位并签到，支持自定义定位
 
 公共选项：
   -base-url URL    应用根地址，默认读取 EASYCHECK_BASE_URL

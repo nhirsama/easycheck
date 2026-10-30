@@ -16,6 +16,14 @@ func runTasks(command string, args []string, output, diagnostics io.Writer) erro
 	config := qdgj.ConfigFromEnv()
 	flags := flag.NewFlagSet("easycheck "+command, flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
+	if command == "sign" {
+		flags.Usage = func() {
+			fmt.Fprintln(diagnostics, "用法：easycheck sign -rwid <任务ID> -pcid <批次ID> [选项]")
+			fmt.Fprintln(diagnostics, "默认读取允许地点的地址，在其半径的 90% 内随机生成坐标。")
+			fmt.Fprintln(diagnostics, "自定义定位时同时传入 -address、-longitude、-latitude。")
+			flags.PrintDefaults()
+		}
+	}
 	flags.StringVar(&config.BaseURL, "base-url", config.BaseURL, "站点基础 URL，也可设置 EASYCHECK_BASE_URL")
 	flags.StringVar(&config.SessionFile, "session", config.SessionFile, "已保存的登录会话")
 	flags.DurationVar(&config.Timeout, "timeout", config.Timeout, "单次 HTTP 请求超时")
@@ -32,9 +40,9 @@ func runTasks(command string, args []string, output, diagnostics io.Writer) erro
 		flags.StringVar(&request.TaskID, "rwid", "", "任务 ID，从 list 结果取得")
 		flags.StringVar(&request.BatchID, "pcid", "", "批次 ID，从 list 结果取得")
 		if command == "sign" {
-			flags.StringVar(&request.Location.Address, "address", "", "实际定位地址")
-			flags.Float64Var(&request.Location.Longitude, "longitude", 0, "实际定位经度")
-			flags.Float64Var(&request.Location.Latitude, "latitude", 0, "实际定位纬度")
+			flags.StringVar(&request.Location.Address, "address", "", "签到地址，与经纬度一起覆盖任务默认地点")
+			flags.Float64Var(&request.Location.Longitude, "longitude", 0, "签到经度，与地址、纬度一起提供")
+			flags.Float64Var(&request.Location.Latitude, "latitude", 0, "签到纬度，与地址、经度一起提供")
 			flags.StringVar(&photoID, "photo-id", "", "已上传照片的文件标识")
 			flags.BoolVar(&request.OutsideRange, "outside-range", false, "使用范围外签到分支")
 			flags.StringVar(&request.Remark, "remark", "", "范围外签到备注，最多 100 个 UTF-16 字符")
@@ -61,8 +69,13 @@ func runTasks(command string, args []string, output, diagnostics io.Writer) erro
 	if command == "sign" {
 		provided := make(map[string]bool)
 		flags.Visit(func(f *flag.Flag) { provided[f.Name] = true })
-		if strings.TrimSpace(request.BatchID) == "" || strings.TrimSpace(request.Location.Address) == "" || !provided["longitude"] || !provided["latitude"] {
-			return errors.New("签到须提供 -rwid、-pcid、-address、-longitude 和 -latitude")
+		if strings.TrimSpace(request.BatchID) == "" {
+			return errors.New("签到须提供 -rwid 和 -pcid")
+		}
+		if !provided["address"] && !provided["longitude"] && !provided["latitude"] {
+			request.UseAllowedLocation = true
+		} else if strings.TrimSpace(request.Location.Address) == "" || !provided["longitude"] || !provided["latitude"] {
+			return errors.New("自定义定位须同时提供 -address、-longitude 和 -latitude")
 		}
 		if photoID != "" {
 			request.PhotoID = &photoID
