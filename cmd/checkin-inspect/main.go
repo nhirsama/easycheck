@@ -29,6 +29,7 @@ func run(args []string, output, diagnostics io.Writer) error {
 	page := flags.Int("page", 1, "列表页码，从 1 开始")
 	pageSize := flags.Int("page-size", 10, "列表每页数量")
 	out := flags.String("out", "", "可选：将原始查询响应保存到权限 0600 的 JSON 文件")
+	flags.Lookup("session").DefValue = ""
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

@@ -15,6 +15,27 @@ import (
 	"easycheck/qdgj"
 )
 
+func TestHelpHidesSessionPath(t *testing.T) {
+	const session = "private-fixture-session.json"
+	t.Setenv("EASYCHECK_SESSION_FILE", session)
+	for _, argument := range []string{"-help", "-unknown-option"} {
+		t.Run(argument, func(t *testing.T) {
+			var output, diagnostics bytes.Buffer
+			err := run([]string{argument}, &output, &diagnostics)
+			if (err != nil) != (argument == "-unknown-option") {
+				t.Fatalf("unexpected argument result: %v", err)
+			}
+			text := output.String() + diagnostics.String()
+			if err != nil {
+				text += err.Error()
+			}
+			if strings.Contains(text, session) || !strings.Contains(text, "-session") {
+				t.Fatal("help must show the session option and hide its configured path")
+			}
+		})
+	}
+}
+
 func TestInspectOnlyQueriesAndKeepsSavedSession(t *testing.T) {
 	const raw = `{"code":200,"data":{"list":[{"rwid":"task","pcid":"batch","qdrw":"fixture","status":"进行中","zt":"未签到"}]}}`
 	calls := 0

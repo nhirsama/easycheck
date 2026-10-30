@@ -84,6 +84,9 @@ func runLogin(command string, args []string, input io.Reader, output, diagnostic
 	flags.StringVar(&config.SessionFile, "session", config.SessionFile, "成功登录后保存的会话文件")
 	captchaPath := flags.String("captcha-file", "captcha.png", "启用验证码时保存的图片")
 	flags.DurationVar(&config.Timeout, "timeout", config.Timeout, "单次 HTTP 请求超时")
+	flags.Lookup("base-url").DefValue = ""
+	flags.Lookup("username").DefValue = ""
+	flags.Lookup("session").DefValue = ""
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

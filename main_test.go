@@ -19,6 +19,43 @@ import (
 
 const fixtureLoginPublicKey = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ=="
 
+func TestHelpHidesEnvironmentConfig(t *testing.T) {
+	values := map[string]string{
+		"EASYCHECK_BASE_URL":     "https://private-site.example.invalid/qdgj/",
+		"EASYCHECK_USERNAME":     "private-fixture-user",
+		"EASYCHECK_PASSWORD":     "private-fixture-password",
+		"EASYCHECK_SESSION_FILE": "private-fixture-session.json",
+	}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+	for _, command := range []string{"login", "check", "list", "detail", "sign"} {
+		for _, argument := range []string{"-help", "-unknown-option"} {
+			t.Run(command+"/"+argument, func(t *testing.T) {
+				var output, diagnostics bytes.Buffer
+				err := run([]string{command, argument}, strings.NewReader(""), &output, &diagnostics)
+				if (err != nil) != (argument == "-unknown-option") {
+					t.Fatalf("unexpected argument result: %v", err)
+				}
+				text := output.String() + diagnostics.String()
+				if err != nil {
+					text += err.Error()
+				}
+				for key, value := range values {
+					if strings.Contains(text, value) {
+						t.Errorf("help disclosed %s", key)
+					}
+				}
+				for _, option := range []string{"-base-url", "-session", "-timeout"} {
+					if !strings.Contains(text, option) {
+						t.Errorf("help is missing %s", option)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestLoginFlow(t *testing.T) {
 	t.Setenv("GODEBUG", "rsa1024min=1")
 	for _, captcha := range []bool{false, true} {

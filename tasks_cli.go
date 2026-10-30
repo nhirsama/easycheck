@@ -48,6 +48,8 @@ func runTasks(command string, args []string, output, diagnostics io.Writer) erro
 			flags.StringVar(&request.Remark, "remark", "", "范围外签到备注，最多 100 个 UTF-16 字符")
 		}
 	}
+	flags.Lookup("base-url").DefValue = ""
+	flags.Lookup("session").DefValue = ""
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
