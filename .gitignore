@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+session.json
+*-session.json
+captcha.png
+easycheck
+*.test
+.easycheck-session-*
+evidence/
+web/
+.idea/
