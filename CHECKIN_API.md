@@ -1,17 +1,18 @@
 # 移动签到协议
 
-本文仅包含通用协议字段及占位词。应用根地址记作 `<BASE_URL>`，来自 `EASYCHECK_BASE_URL` 或显式 `Options.BaseURL`，例如占位地址 `https://example.invalid/qdgj/`。接口相对于应用根路径拼接，地址未以 `/` 结尾时自动补齐。
+本文仅包含通用协议字段及占位词。应用根地址记作 `<BASE_URL>`，来自 `EASYCHECK_BASE_URL` 或显式 `Config.BaseURL`，例如占位地址 `https://example.invalid/qdgj/`。接口相对于应用根路径拼接，地址未以 `/` 结尾时自动补齐。
 
 ## 登录
 
 | 步骤 | 相对路径 | 说明 |
 | --- | --- | --- |
 | 初始化 | `GET <BASE_URL>` | 建立 Cookie 会话 |
+| 登录公钥 | `GET` 页面引用的登录脚本 | 自动提取 RSA 公钥 |
 | 验证码开关 | `GET <BASE_URL>ng/captcha/status` | `appId` 为协议应用标识 |
 | 验证码图片 | `GET <BASE_URL>captchaServlet?v=<timestamp-ms>` | 与登录共用 CookieJar |
 | 登录 | `POST <BASE_URL>login` | `application/x-www-form-urlencoded` |
 
-表单字段为 `username`、`password`、`encryptTransfer`、`timestamp`、`digest`、`systemId`，验证码开启时附加 `captcha`。密码使用配置的 RSA 公钥做 PKCS#1 v1.5 加密，再以 Base64 编码。摘要原文为：
+表单字段为 `username`、`password`、`encryptTransfer`、`timestamp`、`digest`、`systemId`，验证码开启时附加 `captcha`。密码使用页面资源中自动提取的 RSA 公钥做 PKCS#1 v1.5 加密，再以 Base64 编码。摘要原文为：
 
 ```text
 username=<username>,password=<encrypted-password>,timestamp=<timestamp-ms>

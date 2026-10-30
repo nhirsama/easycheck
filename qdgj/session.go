@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"time"
 )
 
-// Session 兼容原登录脚本的 session.json。包含身份凭据，不包含明文密码。
+// Session 保存站点地址、用户代理、身份凭据、Cookie 和登录响应。
 type Session struct {
 	BaseURL       string          `json:"base_url"`
 	SavedAt       time.Time       `json:"saved_at"`
@@ -108,43 +109,80 @@ func WritePrivateFile(path string, data []byte) error {
 	return os.Rename(f.Name(), path)
 }
 
-// NewClientFromSession 恢复会话；不会进行网络请求或覆盖会话文件。
-// BaseURL 来自 Options.BaseURL 或 EASYCHECK_BASE_URL，必须与保存的站点一致。
-func NewClientFromSession(saved *Session, options Options) (*Client, error) {
+// NewClientFromSession 根据配置创建客户端，并恢复传入的会话状态。
+// BaseURL 来自 Config.BaseURL 或 EASYCHECK_BASE_URL，必须与保存的站点一致。
+func NewClientFromSession(saved *Session, config Config) (*Client, error) {
 	if err := saved.validate(); err != nil {
 		return nil, err
 	}
-	sessionBase, _ := parseBaseURL(saved.BaseURL)
-	if options.UserAgent == "" {
-		options.UserAgent = saved.UserAgent
+	if config.UserAgent == "" {
+		config.UserAgent = saved.UserAgent
 	}
-	c, err := NewClient(options)
+	c, err := NewClient(config)
 	if err != nil {
 		return nil, err
 	}
-	if c.base.String() != sessionBase.String() {
-		return nil, errors.New("不能将已保存会话用于不同的 BaseURL")
+	if err := c.restoreSession(saved); err != nil {
+		return nil, err
 	}
-	c.http.Jar.SetCookies(c.base, saved.Cookies)
-	c.user, _ = saved.User()
-	c.authorization = saved.Authorization
-	if c.authorization == "" {
-		c.authorization = c.user.TokenID
-	}
-	if c.authorization == "" {
-		c.authorization = c.user.AccessToken
-	}
-	c.loginResponse = append(json.RawMessage(nil), saved.LoginResponse...)
 	return c, nil
 }
 
-// Session 获取独立快照，包括最近响应更新后的 Cookie，不进行网络请求。
+// LoadSession 读取配置的 SessionFile，验证站点并替换当前对象的会话状态。
+// 加载失败时保留原会话，加载完成后支持并发查询。
+func (c *Client) LoadSession() error {
+	saved, err := LoadSession(c.config.SessionFile)
+	if err != nil {
+		return err
+	}
+	return c.restoreSession(saved)
+}
+
+// SaveSession 将当前对象的会话快照保存到配置的 SessionFile。
+func (c *Client) SaveSession() error {
+	saved, err := c.Session()
+	if err != nil {
+		return err
+	}
+	return saved.Save(c.config.SessionFile)
+}
+
+func (c *Client) restoreSession(saved *Session) error {
+	if err := saved.validate(); err != nil {
+		return err
+	}
+	sessionBase, _ := parseBaseURL(saved.BaseURL)
+	if c.base.String() != sessionBase.String() {
+		return errors.New("不能将已保存会话用于不同的 BaseURL")
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return err
+	}
+	jar.SetCookies(c.base, saved.Cookies)
+	user, _ := saved.User()
+	token := saved.Authorization
+	if token == "" {
+		token = user.TokenID
+	}
+	if token == "" {
+		token = user.AccessToken
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.http.Jar = jar
+	c.user, c.authorization = user, token
+	c.loginResponse = append(json.RawMessage(nil), saved.LoginResponse...)
+	return nil
+}
+
+// Session 获取当前会话的独立快照，包括最近响应更新后的 Cookie。
 func (c *Client) Session() (*Session, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.user.UserID == "" || c.authorization == "" {
 		return nil, ErrNotAuthenticated
 	}
-	return &Session{BaseURL: c.base.String(), SavedAt: time.Now().UTC(), UserAgent: c.userAgent,
+	return &Session{BaseURL: c.base.String(), SavedAt: time.Now().UTC(), UserAgent: c.config.UserAgent,
 		Authorization: c.authorization, Cookies: c.http.Jar.Cookies(c.base), LoginResponse: append(json.RawMessage(nil), c.loginResponse...)}, nil
 }

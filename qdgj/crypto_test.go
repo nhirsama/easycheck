@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// 独立的合成测试公钥，与任何目标站点无关。
+// 用于测试 RSA 登录表单的合成公钥。
 const fixturePublicKey = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ=="
 
 func TestFrontendDigestVectors(t *testing.T) {

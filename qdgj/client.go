@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,34 +22,22 @@ const (
 )
 
 var (
-	ErrNotAuthenticated = errors.New("尚未登录或会话缺少用户及令牌")
-	ErrCaptchaRequired  = errors.New("登录需要验证码，请提供 CaptchaSolver")
-	ErrTaskNotFound     = errors.New("查询不到指定签到任务或批次")
+	ErrNotAuthenticated       = errors.New("尚未登录或会话缺少用户及令牌")
+	ErrCaptchaRequired        = errors.New("登录需要验证码，请提供 CaptchaSolver")
+	ErrTaskNotFound           = errors.New("查询不到指定签到任务或批次")
+	ErrLoginPublicKeyNotFound = errors.New("页面资源中未找到登录 RSA 公钥")
 )
 
-// Options 配置客户端；BaseURL 和登录公钥未指定时分别从
-// EASYCHECK_BASE_URL、EASYCHECK_PUBLIC_KEY 环境变量读取，不内置目标站点。
-type Options struct {
-	BaseURL string
-	// LoginPublicKey 是 Base64 编码的 DER/SPKI RSA 公钥，只在登录时需要。
-	LoginPublicKey string
-	UserAgent      string
-	Timeout        time.Duration
-	// HTTPClient 会被复制，其 Transport 可用于代理或本地测试。
-	// 客户端始终使用独立 CookieJar，并禁止重定向。Timeout 非零时覆盖其超时。
-	HTTPClient *http.Client
-}
-
-// Client 应先完成 Login，再执行其他操作。不要在登录期间并发操作同一客户端。
+// Client 封装初始化配置及会话状态，通过 Login 或 LoadSession 建立身份。
+// 完成登录或会话加载后支持并发查询。
 type Client struct {
-	base           *url.URL
-	http           *http.Client
-	userAgent      string
-	loginPublicKey string
-	mu             sync.RWMutex
-	user           User
-	authorization  string
-	loginResponse  json.RawMessage
+	base          *url.URL
+	http          *http.Client
+	config        Config
+	mu            sync.RWMutex
+	user          User
+	authorization string
+	loginResponse json.RawMessage
 }
 
 type Meta struct {
@@ -59,7 +46,7 @@ type Meta struct {
 	Message    string `json:"message"`
 }
 
-// Response 保留业务响应和原始 JSON，以兼容尚未建模的字段。
+// Response 保存业务状态、响应数据和完整的原始 JSON。
 type Response struct {
 	Code        int             `json:"code"`
 	Meta        Meta            `json:"meta"`
@@ -67,7 +54,7 @@ type Response struct {
 	RawResponse json.RawMessage `json:"-"`
 }
 
-// APIError 表示 HTTP 或业务失败，可用 errors.As 获取状态；不拼接请求体或身份凭据。
+// APIError 表示 HTTP 或业务失败，可通过 errors.As 获取状态和错误消息。
 type APIError struct {
 	Operation  string
 	HTTPStatus int
@@ -80,32 +67,29 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s失败（HTTP=%d, code=%d, statusCode=%d）：%s", e.Operation, e.HTTPStatus, e.Code, e.StatusCode, e.Message)
 }
 
-func NewClient(options Options) (*Client, error) {
-	if options.BaseURL == "" {
-		options.BaseURL = strings.TrimSpace(os.Getenv("EASYCHECK_BASE_URL"))
+// NewClient 合并初始化配置并创建 HTTP 客户端和独立的 CookieJar。
+// 地址、账号、密码及会话路径的空字段使用对应的环境变量。
+func NewClient(config Config) (*Client, error) {
+	config = config.withDefaults()
+	if config.BaseURL == "" {
+		return nil, errors.New("请设置 EASYCHECK_BASE_URL 或 Config.BaseURL")
 	}
-	if options.BaseURL == "" {
-		return nil, errors.New("请设置 EASYCHECK_BASE_URL 或 Options.BaseURL")
-	}
-	if options.LoginPublicKey == "" {
-		options.LoginPublicKey = strings.TrimSpace(os.Getenv("EASYCHECK_PUBLIC_KEY"))
-	}
-	base, err := parseBaseURL(options.BaseURL)
+	base, err := parseBaseURL(config.BaseURL)
 	if err != nil {
 		return nil, err
 	}
-	if options.Timeout < 0 {
+	if config.Timeout < 0 {
 		return nil, errors.New("Timeout 不能小于零")
 	}
 	client := http.Client{}
-	if options.HTTPClient != nil {
-		client = *options.HTTPClient
+	if config.HTTPClient != nil {
+		client = *config.HTTPClient
 	}
-	if options.Timeout > 0 {
-		client.Timeout = options.Timeout
+	if config.Timeout > 0 {
+		client.Timeout = config.Timeout
 	}
 	if client.Timeout == 0 {
-		client.Timeout = 30 * time.Second
+		client.Timeout = defaultTimeout
 	}
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -113,10 +97,8 @@ func NewClient(options Options) (*Client, error) {
 	}
 	client.Jar = jar
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	if options.UserAgent == "" {
-		options.UserAgent = MobileUserAgent
-	}
-	return &Client{base: base, http: &client, userAgent: options.UserAgent, loginPublicKey: options.LoginPublicKey}, nil
+	config.HTTPClient = &client
+	return &Client{base: base, http: &client, config: config}, nil
 }
 
 func parseBaseURL(value string) (*url.URL, error) {
@@ -138,7 +120,11 @@ func (c *Client) request(ctx context.Context, operation, method, path string, bo
 	if authenticated {
 		u.RawQuery = "_t=" + strconv.FormatInt(time.Now().Unix(), 10)
 	}
-	// 不使用可重放的 GetBody，避免标准 Transport 对提交操作重试。
+	return c.requestURL(ctx, operation, method, u, body, contentType, authenticated, headers)
+}
+
+func (c *Client) requestURL(ctx context.Context, operation, method string, u *url.URL, body []byte, contentType string, authenticated bool, headers http.Header) ([]byte, error) {
+	// 请求体使用一次性流，提交操作发送一次。
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -147,13 +133,13 @@ func (c *Client) request(ctx context.Context, operation, method, path string, bo
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
 	}
-	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("User-Agent", c.config.UserAgent)
 	req.Header.Set("Sec-CH-UA-Mobile", "?1")
 	req.Header.Set("Sec-CH-UA-Platform", `"Android"`)
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Referer", c.base.String())
-	if path != "" {
+	if u.Path != c.base.Path {
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	}
 	if contentType != "" {

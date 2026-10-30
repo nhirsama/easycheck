@@ -4,35 +4,30 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 
 	"easycheck/qdgj"
 )
 
-// 这些示例只编译，不在测试时执行网络请求。
+// 以下示例展示客户端的登录和任务查询用法。
 func ExampleClient_Login() {
-	client, err := qdgj.NewClient(qdgj.Options{})
+	client, err := qdgj.NewClient(qdgj.ConfigFromEnv())
 	if err != nil {
 		log.Fatal(err)
 	}
-	saved, err := client.Login(context.Background(), qdgj.LoginOptions{
-		Username: os.Getenv("EASYCHECK_USERNAME"), Password: os.Getenv("EASYCHECK_PASSWORD"),
-	})
-	if err != nil {
+	if _, err := client.Login(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-	if err := saved.Save("session.json"); err != nil {
+	if err := client.SaveSession(); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func ExampleClient_ListTasks() {
-	saved, err := qdgj.LoadSession("session.json")
+	client, err := qdgj.NewClient(qdgj.ConfigFromEnv())
 	if err != nil {
 		log.Fatal(err)
 	}
-	client, err := qdgj.NewClientFromSession(saved, qdgj.Options{})
-	if err != nil {
+	if err := client.LoadSession(); err != nil {
 		log.Fatal(err)
 	}
 	result, err := client.ListTasks(context.Background(), qdgj.ListOptions{})

@@ -8,12 +8,14 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf16"
 )
@@ -58,16 +60,20 @@ func makeLoginForm(publicKeyBase64, username, password, captcha string, now time
 }
 
 func parseLoginPublicKey(publicKeyBase64 string) (*rsa.PublicKey, error) {
-	if publicKeyBase64 == "" {
-		return nil, errors.New("请设置 EASYCHECK_PUBLIC_KEY 或 Options.LoginPublicKey")
-	}
-	der, err := base64.StdEncoding.DecodeString(publicKeyBase64)
-	if err != nil {
-		return nil, err
+	publicKeyBase64 = strings.TrimSpace(publicKeyBase64)
+	var der []byte
+	if block, _ := pem.Decode([]byte(publicKeyBase64)); block != nil {
+		der = block.Bytes
+	} else {
+		var err error
+		der, err = base64.StdEncoding.DecodeString(publicKeyBase64)
+		if err != nil {
+			return nil, err
+		}
 	}
 	parsed, err := x509.ParsePKIXPublicKey(der)
 	if err != nil {
-		return nil, err
+		return x509.ParsePKCS1PublicKey(der)
 	}
 	key, ok := parsed.(*rsa.PublicKey)
 	if !ok {
@@ -76,8 +82,8 @@ func parseLoginPublicKey(publicKeyBase64 string) (*rsa.PublicKey, error) {
 	return key, nil
 }
 
-// 仅用于复现站点遗留公钥协议。显式执行 PKCS#1 v1.5 公钥加密，避免要求调用方
-// 全局设置 GODEBUG=rsa1024min=0；不修改进程环境，也不执行私钥操作。
+// encryptLegacyPKCS1v15 构造 PKCS#1 v1.5 填充并执行 RSA 公钥模幂运算，
+// 兼容遗留登录协议使用的公钥长度。
 func encryptLegacyPKCS1v15(key *rsa.PublicKey, message []byte) ([]byte, error) {
 	if key == nil || key.N == nil || key.N.Sign() <= 0 || key.E < 3 {
 		return nil, errors.New("无效的 RSA 公钥")

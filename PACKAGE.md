@@ -14,42 +14,66 @@ replace easycheck => /path/to/easycheck
 
 将占位路径替换为项目实际目录，再导入 `easycheck/qdgj`。
 
-## 客户端配置
+## 一次配置，使用同一个对象
 
 ```go
-client, err := qdgj.NewClient(qdgj.Options{})
+config := qdgj.Config{
+    BaseURL: baseURL,
+    Username: username,
+    Password: password,
+    SessionFile: "session.json",
+    CaptchaSolver: func(ctx context.Context, image []byte) (string, error) {
+        return askUserForCaptcha(ctx, image)
+    },
+}
+client, err := qdgj.NewClient(config)
+if err != nil {
+    return err
+}
+if _, err := client.Login(ctx); err != nil {
+    return err
+}
+if err := client.SaveSession(); err != nil {
+    return err
+}
+tasks, err := client.ListTasks(ctx, qdgj.ListOptions{})
 ```
 
-默认从环境变量读取：
+`askUserForCaptcha` 由应用实现；不需要验证码时可省略回调。配置只传入构造函数一次，`Login(ctx)` 不再接收账号、密码或验证码配置。对象内部管理登录协议、Cookie 和令牌，查询方法自动使用当前登录用户。页码、任务 ID 和签到位置等每次操作的数据仍传给对应方法。
+
+也可以直接从环境变量创建对象，无需在应用中逐项调用 `os.Getenv`：
+
+```go
+client, err := qdgj.NewClient(qdgj.ConfigFromEnv())
+```
+
+`ConfigFromEnv()` 集中读取配置。`NewClient(Config{})` 也会为未填写的字段补齐环境变量及默认值：
 
 | 环境变量 | 用途 |
 | --- | --- |
 | `EASYCHECK_BASE_URL` | 应用根 URL，必须包含部署路径，没有内置默认站点 |
-| `EASYCHECK_PUBLIC_KEY` | 登录用 Base64 DER/SPKI RSA 公钥，只有登录需要 |
-| `EASYCHECK_USERNAME` | 登录命令使用的账号，包调用时由 `LoginOptions` 传入 |
-| `EASYCHECK_PASSWORD` | 登录命令使用的密码，包调用时由 `LoginOptions` 传入 |
+| `EASYCHECK_USERNAME` | `Config.Username`，对象登录使用的账号 |
+| `EASYCHECK_PASSWORD` | `Config.Password`，对象登录使用的密码 |
+| `EASYCHECK_SESSION_FILE` | `Config.SessionFile`，默认 `session.json` |
 
-`Options.BaseURL`、`Options.LoginPublicKey` 非空时覆盖相应环境变量。另可配置 `UserAgent`、`Timeout` 和 `HTTPClient`；默认使用 Android 手机 UA 和 30 秒超时。自定义 `HTTPClient` 被复制，客户端会建立独立 CookieJar 并禁用重定向。自定义 Transport 的重试行为由调用方负责。
+显式配置的非空字段优先于环境变量。另可配置 `UserAgent`、`Timeout` 和 `HTTPClient`；默认使用 Android 手机 UA 和 30 秒超时。自定义 `HTTPClient` 被复制，客户端会建立独立 CookieJar 并禁用重定向。自定义 Transport 的重试行为由调用方负责。
+
+构造函数不联网、不读写会话文件，并保存配置副本。对象创建后改变原配置或环境变量不会改变它的登录信息及会话路径；切换账号或站点时创建新对象。`Options` 暂时作为 `Config` 的兼容别名保留。
 
 ## 登录及验证码
 
 ```go
-saved, err := client.Login(ctx, qdgj.LoginOptions{
-    Username: username,
-    Password: password,
-    CaptchaSolver: func(ctx context.Context, image []byte) (string, error) {
-        return askUserForCaptcha(ctx, image)
-    },
-})
-if err != nil {
+if _, err := client.Login(ctx); err != nil {
     return err
 }
-return saved.Save("session.json")
+return client.SaveSession()
 ```
 
-`askUserForCaptcha` 由应用实现。验证码关闭时不会调用回调；验证码开启且回调为空时，返回 `ErrCaptchaRequired`，不提交登录。
+登录使用 `Config` 中的账号、密码及 `CaptchaSolver`，RSA 公钥由客户端从页面资源自动获取。验证码关闭时不会调用回调；验证码开启且回调为空时，返回 `ErrCaptchaRequired`，不提交登录。
 
-`Login` 会访问入口、检查验证码开关、按需下载图片，并在同一 CookieJar 内提交一次登录。公钥缺少或格式不正确时先在本地返回错误。密码不保存在客户端或会话中。
+`Login` 会访问入口、提取公钥、检查验证码开关、按需下载图片，并在同一 CookieJar 内提交一次登录。每次调用都会重新读取公钥，提取失败时返回错误。配置密码仅保留在客户端内存中，不写入会话。成功后返回独立的会话快照；若不使用返回值，可以像上面一样忽略它。会话仅在显式调用 `SaveSession` 时写入文件。
+
+`FetchLoginPublicKey(ctx)` 可单独获取公钥，返回 Base64 DER/SPKI 字符串。支持内联的 `setPublicKey` 调用、公钥字段、静态脚本引用和 `/mobile/login` 路由的 Webpack 数字分包，接受 Base64 DER 或 PEM 格式。脚本地址限定在同站点应用根路径下，最多读取 16 个脚本，累计页面资源上限为 16 MiB，每份资源上限为 4 MiB。资源结构变化导致查找失败时返回 `ErrLoginPublicKeyNotFound`，可用 `errors.Is` 判断。
 
 `CaptchaRequired(ctx)` 只检查入口和验证码开关；`FetchCaptcha(ctx)` 下载当前会话的验证码图片。
 
@@ -70,12 +94,11 @@ import (
 )
 
 func main() {
-    saved, err := qdgj.LoadSession("session.json")
+    client, err := qdgj.NewClient(qdgj.ConfigFromEnv())
     if err != nil {
         log.Fatal(err)
     }
-    client, err := qdgj.NewClientFromSession(saved, qdgj.Options{})
-    if err != nil {
+    if err := client.LoadSession(); err != nil {
         log.Fatal(err)
     }
     ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -90,7 +113,7 @@ func main() {
 }
 ```
 
-`NewClientFromSession` 同样使用 `Options.BaseURL` 或 `EASYCHECK_BASE_URL`；它必须与会话保存的基础 URL 一致，避免把会话发送到不同站点。加载与恢复会话不联网，也不覆盖文件。
+`LoadSession()` 使用创建对象时配置的 `SessionFile`，校验会话站点与对象的基础 URL 一致，失败时保留原会话。加载不联网、不重新登录，也不覆盖文件。只恢复会话并查询时无需提供账号和密码。
 
 `ListTasks` 返回 `Tasks`、`PageNum`、`PageSize`、`PageCount`、`Total` 和完整 `RawResponse`。零值分页选项默认第一页、每页 10 条，不自动翻页。
 
@@ -102,11 +125,11 @@ detail, err := client.GetTask(ctx, taskID, batchID)
 
 服务端的坐标和半径支持数字、数字字符串及 `null`，统一解码为 `*Number`：nil 表示缺失，否则用 `float64(*value)` 读取。时间保留原始字符串。
 
-`client.Session()` 可取得含最新 Cookie 的独立快照；`snapshot.Save(path)` 以 `0600` 权限原子写入指定文件。目录须已存在。`Session.User()` 返回用户结构；完整登录响应仍保留在 `LoginResponse`。
+`client.SaveSession()` 将当前会话以 `0600` 权限原子写入配置路径；目录须已存在。`client.Session()` 可取得含最新 Cookie 的独立快照，`Session.User()` 返回用户结构；完整登录响应仍保留在 `LoginResponse`。底层 `LoadSession(path)`、`Session.Save(path)` 和 `NewClientFromSession` 仍保留，供需要自定义存储或恢复内存会话的调用方使用。
 
 ## 显式定位签到
 
-`SignIn` 是唯一提交签到的方法，现有命令行工具不调用它。调用方明确提交时使用：
+`SignIn` 提交签到，CLI 的 `sign` 子命令调用该方法。包调用示例：
 
 ```go
 response, err := client.SignIn(ctx, qdgj.SignInRequest{
@@ -127,4 +150,4 @@ response, err := client.SignIn(ctx, qdgj.SignInRequest{
 
 `APIError` 包含 `HTTPStatus`、`Code`、`StatusCode` 和 `Message`，支持 `errors.As`。本地缺少身份、缺少验证码回调和任务不存在，分别返回 `ErrNotAuthenticated`、`ErrCaptchaRequired`、`ErrTaskNotFound`，支持 `errors.Is`。远端会话过期以相应 `APIError` 返回。
 
-网络方法均接受 `context.Context`，取消错误保留包装链。完成登录后可并发查询；不要在同一客户端登录期间并发进行其他操作。
+网络方法均接受 `context.Context`，取消错误保留包装链。完成登录或会话加载后可并发查询；不要在同一客户端登录或加载会话期间并发进行其他操作。

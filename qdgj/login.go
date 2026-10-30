@@ -14,17 +14,15 @@ import (
 // CaptchaSolver 在需要验证码时调用；image 是同一 Cookie 会话取得的图片。
 type CaptchaSolver func(ctx context.Context, image []byte) (string, error)
 
-type LoginOptions struct {
-	Username      string
-	Password      string
-	CaptchaSolver CaptchaSolver
-}
-
-// CaptchaRequired 先访问登录入口建立 Cookie，再检查验证码开关，不提交登录。
+// CaptchaRequired 访问登录入口建立 Cookie，并返回验证码开关状态。
 func (c *Client) CaptchaRequired(ctx context.Context) (bool, error) {
 	if _, err := c.request(ctx, "访问登录入口", http.MethodGet, "", nil, "", false, nil); err != nil {
 		return false, err
 	}
+	return c.captchaStatus(ctx)
+}
+
+func (c *Client) captchaStatus(ctx context.Context) (bool, error) {
 	raw, err := c.request(ctx, "检查验证码", http.MethodGet, "ng/captcha/status", nil, "", false, http.Header{"Appid": {systemID}})
 	if err != nil {
 		return false, err
@@ -51,30 +49,31 @@ func (c *Client) FetchCaptcha(ctx context.Context) ([]byte, error) {
 	return raw, nil
 }
 
-// Login 完成入口、验证码和一次登录提交，成功后更新当前客户端并返回会话快照。
-// 验证码打开但未提供回调时返回 ErrCaptchaRequired，不提交登录。
-func (c *Client) Login(ctx context.Context, options LoginOptions) (*Session, error) {
-	if err := validateCredentials(options.Username, options.Password); err != nil {
+// Login 使用配置账号读取页面公钥，完成验证码处理和一次登录提交，成功后更新
+// 当前客户端并返回会话快照。SaveSession 将当前会话保存到配置路径。
+// 验证码开启时调用配置的 CaptchaSolver，回调缺失时返回 ErrCaptchaRequired。
+func (c *Client) Login(ctx context.Context) (*Session, error) {
+	if err := validateCredentials(c.config.Username, c.config.Password); err != nil {
 		return nil, err
 	}
-	// 先验证本地配置，避免缺少或无效公钥时仍访问站点。
-	if _, err := parseLoginPublicKey(c.loginPublicKey); err != nil {
+	publicKey, err := c.FetchLoginPublicKey(ctx)
+	if err != nil {
 		return nil, err
 	}
-	required, err := c.CaptchaRequired(ctx)
+	required, err := c.captchaStatus(ctx)
 	if err != nil {
 		return nil, err
 	}
 	captcha := ""
 	if required {
-		if options.CaptchaSolver == nil {
+		if c.config.CaptchaSolver == nil {
 			return nil, ErrCaptchaRequired
 		}
 		image, err := c.FetchCaptcha(ctx)
 		if err != nil {
 			return nil, err
 		}
-		captcha, err = options.CaptchaSolver(ctx, image)
+		captcha, err = c.config.CaptchaSolver(ctx, image)
 		if err != nil {
 			return nil, fmt.Errorf("获取验证码输入：%w", err)
 		}
@@ -83,7 +82,7 @@ func (c *Client) Login(ctx context.Context, options LoginOptions) (*Session, err
 			return nil, errors.New("验证码不能为空")
 		}
 	}
-	form, err := makeLoginForm(c.loginPublicKey, options.Username, options.Password, captcha, time.Now())
+	form, err := makeLoginForm(publicKey, c.config.Username, c.config.Password, captcha, time.Now())
 	if err != nil {
 		return nil, err
 	}

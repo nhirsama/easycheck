@@ -1,4 +1,4 @@
-// checkin-inspect 只调用任务查询方法，不提供签到提交操作。
+// checkin-inspect 查询并展示签到任务列表或批次详情。
 package main
 
 import (
@@ -20,9 +20,10 @@ func main() {
 }
 
 func run(args []string, output, diagnostics io.Writer) error {
+	config := qdgj.ConfigFromEnv()
 	flags := flag.NewFlagSet("checkin-inspect", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
-	sessionPath := flags.String("session", "session.json", "已保存的登录会话")
+	flags.StringVar(&config.SessionFile, "session", config.SessionFile, "已保存的登录会话")
 	taskID := flags.String("rwid", "", "查询指定任务；不提供时查询任务列表")
 	batchID := flags.String("pcid", "", "查询指定批次，与 rwid 一起使用")
 	page := flags.Int("page", 1, "列表页码，从 1 开始")
@@ -37,12 +38,11 @@ func run(args []string, output, diagnostics io.Writer) error {
 	if flags.NArg() != 0 || *page < 1 || *pageSize < 1 || (*batchID != "" && *taskID == "") {
 		return errors.New("请检查参数：页码和每页数量须大于零，pcid 须与 rwid 一起使用")
 	}
-	saved, err := qdgj.LoadSession(*sessionPath)
+	client, err := qdgj.NewClient(config)
 	if err != nil {
 		return err
 	}
-	client, err := qdgj.NewClientFromSession(saved, qdgj.Options{})
-	if err != nil {
+	if err := client.LoadSession(); err != nil {
 		return err
 	}
 	var tasks []qdgj.Task

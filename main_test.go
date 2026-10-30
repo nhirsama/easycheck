@@ -17,9 +17,10 @@ import (
 	"testing"
 )
 
+const fixtureLoginPublicKey = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ=="
+
 func TestLoginFlow(t *testing.T) {
 	t.Setenv("GODEBUG", "rsa1024min=1")
-	t.Setenv("EASYCHECK_PUBLIC_KEY", "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ==")
 	for _, captcha := range []bool{false, true} {
 		t.Run(fmt.Sprintf("captcha=%t", captcha), func(t *testing.T) {
 			t.Setenv("EASYCHECK_USERNAME", "test001")
@@ -29,7 +30,7 @@ func TestLoginFlow(t *testing.T) {
 			defer server.Close()
 			dir := t.TempDir()
 			sessionPath, captchaPath := filepath.Join(dir, "session.json"), filepath.Join(dir, "captcha.png")
-			// Replacing an existing broad-readable file must still produce mode 0600.
+			// 覆盖已有文件后，会话文件权限为 0600。
 			if err := os.WriteFile(sessionPath, []byte("old"), 0644); err != nil {
 				t.Fatal(err)
 			}
@@ -69,7 +70,6 @@ func TestLoginFlow(t *testing.T) {
 
 func TestLoginFailures(t *testing.T) {
 	t.Setenv("GODEBUG", "rsa1024min=1")
-	t.Setenv("EASYCHECK_PUBLIC_KEY", "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ==")
 	t.Setenv("EASYCHECK_USERNAME", "test001")
 	t.Setenv("EASYCHECK_PASSWORD", "Probe-Only-2026")
 	for _, status := range [][2]int{{200, 401}, {401, 401}} {
@@ -124,7 +124,7 @@ func loginFixture(t *testing.T, captcha bool, httpStatus, apiStatus int, posts *
 		switch r.URL.Path {
 		case "/qdgj/":
 			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "initial", Path: "/qdgj/", HttpOnly: true})
-			fmt.Fprint(w, "<!doctype html><title>fixture</title>")
+			fmt.Fprintf(w, `<!doctype html><script>encryptor.setPublicKey("%s")</script>`, fixtureLoginPublicKey)
 		case "/qdgj/ng/captcha/status":
 			if r.Header.Get("appId") != "ly-zhxg" {
 				t.Error("missing appId")

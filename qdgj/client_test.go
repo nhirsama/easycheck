@@ -23,7 +23,7 @@ func fixtureSession(base string) *Session {
 
 func restoredClient(t *testing.T, base string) *Client {
 	t.Helper()
-	c, err := NewClientFromSession(fixtureSession(base), Options{BaseURL: base + "/qdgj/"})
+	c, err := NewClientFromSession(fixtureSession(base), Config{BaseURL: base + "/qdgj/"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestLoginWithOptionalCaptchaThenRestoreAndQuery(t *testing.T) {
 				switch r.URL.Path {
 				case "/qdgj/":
 					http.SetCookie(w, &http.Cookie{Name: "sid", Value: "initial", Path: "/qdgj/"})
-					fmt.Fprint(w, "<html></html>")
+					fmt.Fprintf(w, `<script>encryptor.setPublicKey("%s")</script>`, fixturePublicKey)
 				case "/qdgj/ng/captcha/status":
 					if cookie, err := r.Cookie("sid"); err != nil || cookie.Value != "initial" {
 						t.Error("entry cookie lost")
@@ -88,25 +88,33 @@ func TestLoginWithOptionalCaptchaThenRestoreAndQuery(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			c, err := NewClient(Options{BaseURL: server.URL + "/qdgj/", LoginPublicKey: fixturePublicKey})
+			path := filepath.Join(t.TempDir(), "session.json")
+			config := Config{BaseURL: server.URL + "/qdgj/",
+				Username: "fixture-user", Password: "secret", SessionFile: path,
+				CaptchaSolver: func(ctx context.Context, image []byte) (string, error) {
+					solves++
+					if !strings.HasPrefix(string(image), "\x89PNG") {
+						t.Error("callback did not receive captcha image")
+					}
+					return " AB12 ", nil
+				}}
+			c, err := NewClient(config)
 			if err != nil {
 				t.Fatal(err)
 			}
-			saved, err := c.Login(context.Background(), LoginOptions{Username: "fixture-user", Password: "secret", CaptchaSolver: func(ctx context.Context, image []byte) (string, error) {
-				solves++
-				if !strings.HasPrefix(string(image), "\x89PNG") {
-					t.Error("callback did not receive captcha image")
-				}
-				return " AB12 ", nil
-			}})
+			// 修改调用方配置，验证对象保存的配置副本。
+			config.Username, config.Password, config.SessionFile = "changed", "changed", "unused"
+			saved, err := c.Login(context.Background())
 			if err != nil || posts != 1 || solves != map[bool]int{true: 1, false: 0}[captcha] {
 				t.Fatalf("login: err=%v posts=%d solves=%d", err, posts, solves)
 			}
-			path := filepath.Join(t.TempDir(), "session.json")
+			if saved.Authorization != "fixture-token" {
+				t.Fatal("Login did not return the authenticated session")
+			}
 			if err := os.WriteFile(path, []byte("old"), 0644); err != nil {
 				t.Fatal(err)
 			}
-			if err := saved.Save(path); err != nil {
+			if err := c.SaveSession(); err != nil {
 				t.Fatal(err)
 			}
 			info, _ := os.Stat(path)
@@ -120,8 +128,11 @@ func TestLoginWithOptionalCaptchaThenRestoreAndQuery(t *testing.T) {
 			if !strings.Contains(string(loaded.LoginResponse), `"extra"`) {
 				t.Fatal("unmodeled login fields were lost")
 			}
-			restored, err := NewClientFromSession(loaded, Options{BaseURL: loaded.BaseURL})
+			restored, err := NewClient(Config{BaseURL: loaded.BaseURL, SessionFile: path})
 			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restored.LoadSession(); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := restored.ListTasks(context.Background(), ListOptions{}); err != nil {
@@ -140,13 +151,16 @@ func TestMissingCaptchaSolverDoesNotSubmitLogin(t *testing.T) {
 		if r.Method == http.MethodPost {
 			posts++
 		}
+		if r.URL.Path == "/" {
+			fmt.Fprintf(w, `<script>encryptor.setPublicKey("%s")</script>`, fixturePublicKey)
+		}
 		if strings.HasSuffix(r.URL.Path, "/status") {
 			fmt.Fprint(w, `{"meta":{"statusCode":200},"data":true}`)
 		}
 	}))
 	defer server.Close()
-	c, _ := NewClient(Options{BaseURL: server.URL, LoginPublicKey: fixturePublicKey})
-	_, err := c.Login(context.Background(), LoginOptions{Username: "fixture", Password: "secret"})
+	c, _ := NewClient(Config{BaseURL: server.URL, Username: "fixture", Password: "secret"})
+	_, err := c.Login(context.Background())
 	if !errors.Is(err, ErrCaptchaRequired) || posts != 0 {
 		t.Fatalf("err=%v posts=%d", err, posts)
 	}
@@ -255,7 +269,7 @@ func TestNoSignReplayOrRedirectAndValidationBeforeNetwork(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 307, Header: http.Header{"Location": {"/other"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
 	})
-	c, err := NewClientFromSession(fixtureSession("https://fixture.invalid"), Options{BaseURL: "https://fixture.invalid/qdgj/", HTTPClient: &http.Client{Transport: transport}})
+	c, err := NewClientFromSession(fixtureSession("https://fixture.invalid"), Config{BaseURL: "https://fixture.invalid/qdgj/", HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,17 +295,17 @@ func TestNoSignReplayOrRedirectAndValidationBeforeNetwork(t *testing.T) {
 }
 
 func TestContextAndSessionIsolation(t *testing.T) {
-	c, err := NewClient(Options{BaseURL: "https://fixture.invalid/qdgj/"})
+	c, err := NewClient(Config{BaseURL: "https://fixture.invalid/qdgj/"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.ListTasks(context.Background(), ListOptions{}); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("unauthenticated query: %v", err)
 	}
-	if _, err := NewClientFromSession(fixtureSession("https://fixture.invalid"), Options{BaseURL: "https://other.invalid"}); err == nil {
+	if _, err := NewClientFromSession(fixtureSession("https://fixture.invalid"), Config{BaseURL: "https://other.invalid"}); err == nil {
 		t.Fatal("session allowed on different host")
 	}
-	if _, err := NewClientFromSession(nil, Options{}); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := NewClientFromSession(nil, Config{}); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("canceled request reached server") }))

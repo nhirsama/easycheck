@@ -119,7 +119,7 @@ func (c *Client) queryTasks(ctx context.Context, query taskQuery) (*TaskList, er
 	return &result, nil
 }
 
-// ListTasks 查询一页任务，零值分页默认为第 1 页、每页 10 条，不自动翻页。
+// ListTasks 查询一页任务，零值分页默认为第 1 页、每页 10 条。
 func (c *Client) ListTasks(ctx context.Context, options ListOptions) (*TaskList, error) {
 	if options.Page < 0 || options.PageSize < 0 {
 		return nil, errors.New("页码和每页数量不能小于零")
@@ -133,7 +133,7 @@ func (c *Client) ListTasks(ctx context.Context, options ListOptions) (*TaskList,
 	return c.queryTasks(ctx, taskQuery{Pagination: &pagination{Page: options.Page, PageSize: options.PageSize}})
 }
 
-// GetTask 查询指定任务的批次。batchID 为空时沿用前端只传任务 ID 的查询行为。
+// GetTask 按任务 ID 和批次 ID 查询详情。batchID 为空时按任务 ID 查询。
 func (c *Client) GetTask(ctx context.Context, taskID, batchID string) (*TaskDetail, error) {
 	if strings.TrimSpace(taskID) == "" {
 		return nil, errors.New("TaskID 不能为空")
@@ -150,7 +150,7 @@ func (c *Client) GetTask(ctx context.Context, taskID, batchID string) (*TaskDeta
 	return nil, ErrTaskNotFound
 }
 
-// Location 是调用方提供的实际定位，不从允许地点中心或历史签到位置推算。
+// Location 保存调用方提供的实际定位地址、经度和纬度。
 type Location struct {
 	Address   string
 	Longitude float64
@@ -161,9 +161,9 @@ type SignInRequest struct {
 	TaskID       string
 	BatchID      string
 	Location     Location
-	PhotoID      *string // 无照片时传 nil，编码为 JSON null。
+	PhotoID      *string // 照片文件标识，nil 编码为 JSON null。
 	OutsideRange bool
-	Remark       string // 仅供 OutsideRange 使用，必填且不超过 100 个 UTF-16 code units。
+	Remark       string // 范围外签到的必填备注，长度上限为 100 个 UTF-16 字符。
 }
 
 type signPayload struct {
@@ -178,9 +178,9 @@ type signPayload struct {
 	Remark       string  `json:"bz,omitempty"`
 }
 
-// SignIn 是唯一会提交签到的方法。仅发送一次请求，不预查询、不自动重试。
+// SignIn 根据任务、批次和定位信息发送一次签到请求。
 // TaskID/BatchID 须从最新任务查询取得；成功条件为服务端 code == 200。
-// 若请求超时或连接中断，结果可能不确定，应查询任务状态后再决定后续操作。
+// 请求超时或连接中断后，可通过 GetTask 核对任务状态。
 func (c *Client) SignIn(ctx context.Context, request SignInRequest) (*Response, error) {
 	if strings.TrimSpace(request.TaskID) == "" || strings.TrimSpace(request.BatchID) == "" {
 		return nil, errors.New("TaskID 和 BatchID 不能为空")
