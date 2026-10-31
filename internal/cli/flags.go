@@ -1,0 +1,52 @@
+package cli
+
+import (
+	"errors"
+	"flag"
+	"strings"
+)
+
+func (c *command) bindCommonFlags() {
+	c.stringFlag(&c.config.BaseURL, "base-url", c.config.BaseURL, "站点基础 `URL`，默认读取 EASYCHECK_BASE_URL")
+	c.stringFlag(&c.config.SessionFile, "session", c.config.SessionFile, "会话 `FILE`，默认读取 EASYCHECK_SESSION_FILE 或 session.json")
+	c.flags.DurationVar(&c.config.Timeout, "timeout", c.config.Timeout, "单次 HTTP 请求超时 `DURATION`")
+}
+
+func (c *command) stringFlag(value *string, name, initial, description string) {
+	c.flags.StringVar(value, name, initial, description)
+	c.flags.Lookup(name).DefValue = ""
+}
+
+func isCommonFlag(name string) bool {
+	return name == "base-url" || name == "session" || name == "timeout"
+}
+
+type responseOptions struct {
+	json bool
+	out  string
+}
+
+func (o *responseOptions) bind(flags *flag.FlagSet) {
+	flags.BoolVar(&o.json, "json", false, "输出完整 JSON 响应")
+	flags.StringVar(&o.out, "out", "", "将原始响应保存到权限 0600 的 `FILE`")
+}
+
+type taskOptions struct {
+	taskID  string
+	batchID string
+}
+
+func (o *taskOptions) bind(flags *flag.FlagSet) {
+	flags.StringVar(&o.taskID, "rwid", "", "任务 `ID`，从 list 结果取得")
+	flags.StringVar(&o.batchID, "pcid", "", "批次 `ID`，从 list 结果取得")
+}
+
+func (o taskOptions) validate(requireBatch bool) error {
+	if strings.TrimSpace(o.taskID) == "" {
+		return errors.New("请提供 --rwid 任务 ID")
+	}
+	if requireBatch && strings.TrimSpace(o.batchID) == "" {
+		return errors.New("签到须提供 --rwid 和 --pcid")
+	}
+	return nil
+}

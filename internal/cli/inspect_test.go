@@ -1,7 +1,8 @@
-package main
+package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,13 +16,18 @@ import (
 	"easycheck/qdgj"
 )
 
+func runInspect(args []string, output, diagnostics io.Writer) error {
+	a := &app{input: strings.NewReader(""), output: output, diagnostics: diagnostics}
+	return a.runCommand(context.Background(), inspectSpec, args)
+}
+
 func TestHelpHidesSessionPath(t *testing.T) {
 	const session = "private-fixture-session.json"
 	t.Setenv("EASYCHECK_SESSION_FILE", session)
 	for _, argument := range []string{"-help", "-unknown-option"} {
 		t.Run(argument, func(t *testing.T) {
 			var output, diagnostics bytes.Buffer
-			err := run([]string{argument}, &output, &diagnostics)
+			err := runInspect([]string{argument}, &output, &diagnostics)
 			if (err != nil) != (argument == "-unknown-option") {
 				t.Fatalf("unexpected argument result: %v", err)
 			}
@@ -29,7 +35,7 @@ func TestHelpHidesSessionPath(t *testing.T) {
 			if err != nil {
 				text += err.Error()
 			}
-			if strings.Contains(text, session) || !strings.Contains(text, "-session") {
+			if strings.Contains(text, session) || argument == "-help" && !strings.Contains(text, "--session") {
 				t.Fatal("help must show the session option and hide its configured path")
 			}
 		})
@@ -65,11 +71,22 @@ func TestInspectOnlyQueriesAndKeepsSavedSession(t *testing.T) {
 			args = append(args, "-rwid", "task", "-pcid", "batch")
 		}
 		var output bytes.Buffer
-		if err := run(args, &output, io.Discard); err != nil {
+		if err := runInspect(args, &output, io.Discard); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(output.String(), "未提交签到") {
-			t.Fatal("missing read-only result")
+		if !strings.Contains(output.String(), "fixture") || !strings.Contains(output.String(), "未签到") {
+			t.Fatal("missing task fields")
+		}
+		canonical := []string{"list", "--session", path}
+		if detail {
+			canonical = []string{"detail", "--session", path, "--rwid", "task", "--pcid", "batch"}
+		}
+		var expected bytes.Buffer
+		if err := run(canonical, strings.NewReader(""), &expected, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		if output.String() != expected.String() {
+			t.Fatal("independent query output differs from the main CLI")
 		}
 		content, err := os.ReadFile(out)
 		if err != nil || string(content) != raw {
@@ -81,7 +98,7 @@ func TestInspectOnlyQueriesAndKeepsSavedSession(t *testing.T) {
 		}
 	}
 	after, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(before, after) || calls != 2 {
+	if err != nil || !bytes.Equal(before, after) || calls != 4 {
 		t.Fatalf("session changed or requests retried: calls=%d err=%v", calls, err)
 	}
 }

@@ -4,7 +4,7 @@
 session.json
 *-session.json
 captcha.png
-easycheck
+/easycheck
 *.test
 .easycheck-session-*
 evidence/

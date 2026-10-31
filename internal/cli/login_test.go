@@ -1,9 +1,8 @@
-package main
+package cli
 
 import (
 	"bytes"
 	"crypto/sha1"
-	"easycheck/qdgj"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"easycheck/qdgj"
 )
 
 const fixtureLoginPublicKey = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ=="
@@ -46,9 +47,11 @@ func TestHelpHidesEnvironmentConfig(t *testing.T) {
 						t.Errorf("help disclosed %s", key)
 					}
 				}
-				for _, option := range []string{"-base-url", "-session", "-timeout"} {
-					if !strings.Contains(text, option) {
-						t.Errorf("help is missing %s", option)
+				if argument == "-help" {
+					for _, option := range []string{"--base-url", "--session", "--timeout"} {
+						if !strings.Contains(text, option) {
+							t.Errorf("help is missing %s", option)
+						}
 					}
 				}
 			})
