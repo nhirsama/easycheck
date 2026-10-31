@@ -17,6 +17,29 @@ func (c *command) stringFlag(value *string, name, initial, description string) {
 	c.flags.Lookup(name).DefValue = ""
 }
 
+func (c *command) flagProvided(name string) bool {
+	provided := false
+	c.flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			provided = true
+		}
+	})
+	return provided
+}
+
+func (c *command) validateConfig() error {
+	if strings.TrimSpace(c.config.BaseURL) == "" {
+		return errors.New("请通过 --base-url 或 EASYCHECK_BASE_URL 设置站点基础 URL")
+	}
+	if strings.TrimSpace(c.config.SessionFile) == "" {
+		return errors.New("--session 会话文件路径不能为空")
+	}
+	if c.config.Timeout <= 0 {
+		return errors.New("--timeout 必须大于零")
+	}
+	return nil
+}
+
 func isCommonFlag(name string) bool {
 	return name == "base-url" || name == "session" || name == "timeout"
 }

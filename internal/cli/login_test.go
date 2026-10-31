@@ -2,7 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,6 +23,134 @@ import (
 )
 
 const fixtureLoginPublicKey = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ=="
+
+func TestLoginConfigurationPriority(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.StdEncoding.EncodeToString(der)
+	for _, mode := range []string{"arguments only", "arguments override environment", "environment only", "mixed", "stdin overrides environment"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			envSession, argSession := filepath.Join(dir, "env-session.json"), filepath.Join(dir, "arg-session.json")
+			wantUsername, wantPassword, wantSession := "env-user", "env-password", envSession
+			var posts, fallbackCalls atomic.Int32
+			fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fallbackCalls.Add(1)
+				http.Error(w, "unexpected environment target", http.StatusBadRequest)
+			}))
+			defer fallback.Close()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/qdgj/":
+					fmt.Fprintf(w, `<script>encryptor.setPublicKey("%s")</script>`, publicKey)
+				case "/qdgj/ng/captcha/status":
+					fmt.Fprint(w, `{"meta":{"statusCode":200},"data":false}`)
+				case "/qdgj/login":
+					posts.Add(1)
+					if err := r.ParseForm(); err != nil {
+						t.Error(err)
+					}
+					if r.PostForm.Get("username") != wantUsername {
+						t.Error("login used the wrong username source")
+					}
+					ciphertext, err := base64.StdEncoding.DecodeString(r.PostForm.Get("password"))
+					if err != nil {
+						t.Error(err)
+					}
+					plaintext, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext)
+					if err != nil || string(plaintext) != wantPassword {
+						t.Error("login used the wrong password source")
+					}
+					fmt.Fprint(w, `{"meta":{"statusCode":200},"data":{"userId":"fixture-user","tokenId":"fixture-token"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			t.Setenv("EASYCHECK_BASE_URL", server.URL+"/qdgj/")
+			t.Setenv("EASYCHECK_USERNAME", "env-user")
+			t.Setenv("EASYCHECK_PASSWORD", "env-password")
+			t.Setenv("EASYCHECK_SESSION_FILE", envSession)
+			args, input := []string{"login"}, ""
+			switch mode {
+			case "arguments only", "arguments override environment":
+				if mode == "arguments only" {
+					for _, name := range []string{"EASYCHECK_BASE_URL", "EASYCHECK_USERNAME", "EASYCHECK_PASSWORD", "EASYCHECK_SESSION_FILE"} {
+						t.Setenv(name, "")
+					}
+				} else {
+					t.Setenv("EASYCHECK_BASE_URL", fallback.URL+"/qdgj/")
+				}
+				args = append(args, "--base-url", server.URL+"/qdgj/", "--username", "arg-user", "--password", "arg-password", "--session", argSession)
+				wantUsername, wantPassword, wantSession = "arg-user", "arg-password", argSession
+			case "mixed":
+				args = append(args, "--username", "arg-user")
+				wantUsername = "arg-user"
+			case "stdin overrides environment":
+				args = append(args, "--password-stdin")
+				input, wantPassword = "stdin-password\n", "stdin-password"
+			}
+			var output, diagnostics bytes.Buffer
+			if err := run(args, strings.NewReader(input), &output, &diagnostics); err != nil {
+				t.Fatal(err)
+			}
+			if posts.Load() != 1 || fallbackCalls.Load() != 0 {
+				t.Fatal("login used the wrong base URL or submitted more than once")
+			}
+			if _, err := os.Stat(wantSession); err != nil {
+				t.Fatal("session was not saved to the selected path")
+			}
+			if wantSession != envSession {
+				if _, err := os.Stat(envSession); !os.IsNotExist(err) {
+					t.Fatal("login wrote to the overridden environment session path")
+				}
+			}
+			for _, secret := range []string{wantPassword, "fixture-token"} {
+				if strings.Contains(output.String()+diagnostics.String(), secret) {
+					t.Fatal("login disclosed a credential")
+				}
+			}
+		})
+	}
+}
+
+func TestLoginRejectsEmptyOverridesAndPasswordConflict(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	defer server.Close()
+	t.Setenv("EASYCHECK_BASE_URL", server.URL+"/qdgj/")
+	t.Setenv("EASYCHECK_USERNAME", "env-user")
+	t.Setenv("EASYCHECK_PASSWORD", "env-password")
+	t.Setenv("EASYCHECK_SESSION_FILE", filepath.Join(t.TempDir(), "env-session.json"))
+	for _, args := range [][]string{
+		{"--base-url", ""}, {"--session", ""}, {"--username", ""}, {"--password", ""},
+		{"--password", "arg-password", "--password-stdin"}, {"--password-stdin"},
+	} {
+		if err := run(append([]string{"login"}, args...), strings.NewReader("\n"), io.Discard, io.Discard); err == nil {
+			t.Fatal("empty override or conflicting password sources were accepted")
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatal("invalid configuration sent a request")
+	}
+}
+
+func TestLoginHelpHidesPasswordArgument(t *testing.T) {
+	const password = "private-arg-password"
+	var output, diagnostics bytes.Buffer
+	if err := run([]string{"login", "--password", password, "--help"}, strings.NewReader(""), &output, &diagnostics); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String()+diagnostics.String(), password) || !strings.Contains(output.String(), "--password PASSWORD") {
+		t.Fatal("help must show the password option and hide its value")
+	}
+}
 
 func TestHelpHidesEnvironmentConfig(t *testing.T) {
 	values := map[string]string{

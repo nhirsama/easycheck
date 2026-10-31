@@ -15,16 +15,32 @@ var loginSpec = commandSpec{
 	name:     "login",
 	summary:  "登录并保存会话",
 	syntax:   "[选项]",
-	examples: []string{"easycheck login", "easycheck login --username example-user --password-stdin"},
+	examples: []string{"easycheck login --base-url https://example.invalid/qdgj/ --username example-user --password '<password>'", "easycheck login --username example-user --password-stdin"},
 	setup:    (*app).configureLogin,
 }
 
 func (a *app) configureLogin(c *command) {
 	c.stringFlag(&c.config.Username, "username", c.config.Username, "登录 `USER`，默认读取 EASYCHECK_USERNAME")
+	c.stringFlag(&c.config.Password, "password", c.config.Password, "登录 `PASSWORD`，默认读取 EASYCHECK_PASSWORD")
 	passwordStdin := c.flags.Bool("password-stdin", false, "从标准输入第一行读取密码")
 	captchaPath := c.flags.String("captcha-file", "captcha.png", "将验证码图片保存到 `FILE`")
 	check := c.flags.Bool("check", false, "检查入口与验证码状态")
 	c.hiddenFlags = map[string]bool{"check": true}
+	c.validate = func() error {
+		if *check {
+			return nil
+		}
+		if *passwordStdin && c.flagProvided("password") {
+			return errors.New("--password 和 --password-stdin 须择一使用")
+		}
+		if c.config.Username == "" {
+			return errors.New("请通过 --username 或 EASYCHECK_USERNAME 设置账号")
+		}
+		if !*passwordStdin && c.config.Password == "" {
+			return errors.New("请通过 --password、--password-stdin 或 EASYCHECK_PASSWORD 设置密码")
+		}
+		return nil
+	}
 	c.run = func(ctx context.Context) error {
 		if *check {
 			return a.check(ctx, c)
@@ -35,6 +51,9 @@ func (a *app) configureLogin(c *command) {
 			c.config.Password, err = readLine(reader)
 			if err != nil {
 				return fmt.Errorf("读取密码：%w", err)
+			}
+			if c.config.Password == "" {
+				return errors.New("标准输入中的密码不能为空")
 			}
 		}
 		c.config.CaptchaSolver = func(_ context.Context, image []byte) (string, error) {

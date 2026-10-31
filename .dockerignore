@@ -1,0 +1,10 @@
+.git
+.idea
+.env*
+session.json
+*-session.json
+captcha.png
+dist/
+*.test
+evidence/
+web/

@@ -21,6 +21,7 @@ func (a *app) printRootHelp() error {
 	table.Flush()
 	fmt.Fprintln(&text, "\n公共选项（放在命令之后）：")
 	printFlags(&text, a.newCommand(commandSpec{}), true)
+	fmt.Fprintln(&text, "\n配置优先级：命令行参数 > 环境变量 > 默认值。")
 	fmt.Fprintln(&text, "\n帮助选项：\n  -h, --help  查看帮助")
 	fmt.Fprintln(&text, "\n示例：\n  easycheck login\n  easycheck list --page 1 --page-size 10\n  easycheck help sign")
 	_, err := io.WriteString(a.output, text.String())
@@ -40,6 +41,7 @@ func (a *app) printCommandHelp(c *command) error {
 	}
 	fmt.Fprintln(&text, "\n公共选项：")
 	printFlags(&text, c, true)
+	fmt.Fprintln(&text, "\n配置优先级：命令行参数 > 环境变量 > 默认值。")
 	fmt.Fprintln(&text, "\n帮助选项：\n  -h, --help  查看帮助")
 	if len(c.spec.examples) > 0 {
 		fmt.Fprintln(&text, "\n示例：")

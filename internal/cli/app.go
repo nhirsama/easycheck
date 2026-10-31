@@ -143,8 +143,8 @@ func (a *app) runCommand(ctx context.Context, spec commandSpec, args []string) e
 	if c.flags.NArg() != 0 {
 		return &usageError{err: errors.New("参数须使用选项名称"), path: spec.path()}
 	}
-	if c.config.Timeout <= 0 {
-		return &usageError{err: errors.New("--timeout 必须大于零"), path: spec.path()}
+	if err := c.validateConfig(); err != nil {
+		return &usageError{err: err, path: spec.path()}
 	}
 	if c.validate != nil {
 		if err := c.validate(); err != nil {

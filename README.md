@@ -4,18 +4,20 @@
 
 ## 最小使用
 
-设置应用根地址、账号和密码，将示例值替换为实际配置：
+通过命令行参数登录，将示例值替换为实际配置：
+
+```sh
+go run ./cmd/easycheck login \
+  --base-url 'https://example.invalid/qdgj/' \
+  --username 'example-user' --password '<password>'
+```
+
+配置优先级：**命令行参数 > 环境变量 > 默认值**。`--base-url`、`--username`、`--password`、`--session` 分别对应 `EASYCHECK_BASE_URL`、`EASYCHECK_USERNAME`、`EASYCHECK_PASSWORD`、`EASYCHECK_SESSION_FILE`。
+
+查询任务时传入相同的基础地址，或设置 `EASYCHECK_BASE_URL`：
 
 ```sh
 export EASYCHECK_BASE_URL='https://example.invalid/qdgj/'
-export EASYCHECK_USERNAME='example-user'
-export EASYCHECK_PASSWORD='replace-with-password'
-```
-
-登录并列出签到任务：
-
-```sh
-go run ./cmd/easycheck login
 go run ./cmd/easycheck list
 ```
 
@@ -30,5 +32,16 @@ go run ./cmd/easycheck sign --rwid '<task-id>' --pcid '<batch-id>'
 
 签到默认从任务允许地点生成定位。更多选项使用 `go run ./cmd/easycheck help sign` 查看。
 
-- [CLI 使用说明](docs/CLI.md)
-- [Go 包调用与协议参考](docs/API.md)
+## Docker
+
+```sh
+docker build -t easycheck .
+docker run --rm -it \
+  -e EASYCHECK_BASE_URL='https://example.invalid/qdgj/' \
+  -e EASYCHECK_USERNAME='example-user' \
+  -e EASYCHECK_PASSWORD='replace-with-password' \
+  -v easycheck-data:/data \
+  easycheck login
+```
+
+后续用同一个 `/data` 卷运行 `list`、`detail` 或 `sign`，即可复用登录会话。

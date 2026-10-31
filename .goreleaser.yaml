@@ -1,0 +1,77 @@
+version: 2
+
+project_name: easycheck
+
+builds:
+  - id: linux
+    main: ./cmd/easycheck
+    binary: easycheck
+    goos:
+      - linux
+    goarch:
+      - amd64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: windows
+    main: ./cmd/easycheck
+    binary: easycheck
+    goos:
+      - windows
+    goarch:
+      - amd64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: binaries
+    ids:
+      - linux
+      - windows
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - docs/CLI.md
+      - docs/API.md
+
+nfpms:
+  - id: deb
+    package_name: easycheck
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    ids:
+      - linux
+    formats:
+      - deb
+    maintainer: EasyCheck Maintainers <easycheck@example.invalid>
+    description: Mobile check-in client
+    section: utils
+    priority: optional
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/easycheck/README.md
+      - src: docs/CLI.md
+        dst: /usr/share/doc/easycheck/CLI.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
+
+release:
+  draft: false
+  prerelease: auto

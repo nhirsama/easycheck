@@ -39,7 +39,7 @@ easycheck help [命令]
 | `--timeout DURATION` | 单次 HTTP 请求超时，默认 `30s`，须大于零 |
 | `-h, --help` | 查看帮助 |
 
-显式选项覆盖环境变量。环境配置由客户端包统一读取，配置项见根目录的 `.env.example`。使用 `.env` 文件时，填写本地配置后手动导出：
+配置优先级：**命令行参数 > 环境变量 > 默认值**。省略参数时读取对应的环境变量；显式传入空的必填值时返回错误。环境配置项见根目录的 `.env.example`。使用 `.env` 文件时，填写本地配置后手动导出：
 
 ```sh
 set -a
@@ -60,15 +60,22 @@ set +a
 ./easycheck login
 ```
 
-`check` 显示入口地址和验证码开关。`login` 使用 `EASYCHECK_USERNAME`、`EASYCHECK_PASSWORD` 登录，以 `0600` 权限保存会话。
+`check` 显示入口地址和验证码开关。`login` 支持直接传入地址、账号和密码，以 `0600` 权限保存会话：
+
+```sh
+./easycheck login --base-url 'https://example.invalid/qdgj/' --username example-user --password '<password>'
+```
+
+省略账号或密码参数时，分别读取 `EASYCHECK_USERNAME`、`EASYCHECK_PASSWORD`。
 
 | 登录选项 | 功能 |
 | --- | --- |
 | `--username USER` | 覆盖 `EASYCHECK_USERNAME` 中的账号 |
+| `--password PASSWORD` | 覆盖 `EASYCHECK_PASSWORD` 中的密码 |
 | `--password-stdin` | 从标准输入第一行读取密码，覆盖环境中的密码 |
 | `--captcha-file FILE` | 保存验证码图片，默认 `captcha.png` |
 
-以 zsh 隐藏输入密码，再登录：
+`--password` 与 `--password-stdin` 择一使用。以 zsh 隐藏输入密码，再登录：
 
 ```zsh
 read -rs 'EASYCHECK_PASSWORD?密码：'
