@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"io"
-	"strings"
 
 	"easycheck/qdgj"
 )
@@ -12,9 +10,9 @@ import (
 var inspectSpec = commandSpec{
 	program:     "checkin-inspect",
 	summary:     "查询签到任务和批次详情",
-	syntax:      "[--rwid ID] [--pcid ID] [选项]",
-	description: "提供 --rwid 时查询详情，其余情况查询列表。",
-	examples:    []string{"checkin-inspect --page 1", "checkin-inspect --rwid '<task-id>' --pcid '<batch-id>'"},
+	syntax:      "[--pcid ID] [选项]",
+	description: "提供 --pcid 时查询批次详情，其余情况查询列表。",
+	examples:    []string{"checkin-inspect --page 1", "checkin-inspect --pcid '<batch-id>'"},
 	setup:       (*app).configureInspect,
 }
 
@@ -35,13 +33,13 @@ func (a *app) configureInspect(c *command) {
 		if err := validatePagination(options); err != nil {
 			return err
 		}
-		if task.batchID != "" && strings.TrimSpace(task.taskID) == "" {
-			return errors.New("--pcid 须与 --rwid 一起使用")
+		if c.flagProvided("pcid") {
+			return task.validate()
 		}
 		return nil
 	}
 	c.run = func(ctx context.Context) error {
-		if task.taskID != "" {
+		if c.flagProvided("pcid") {
 			return a.detail(ctx, c, task, response)
 		}
 		return a.list(ctx, c, options, response)

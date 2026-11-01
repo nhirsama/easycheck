@@ -4,7 +4,6 @@ import (
 	"errors"
 	"math"
 	"math/rand/v2"
-	"strings"
 )
 
 const earthRadiusMeters = 6371008.8
@@ -15,10 +14,9 @@ func randomAllowedLocation(places []AllowedLocation) (Location, error) {
 		if place.Longitude == nil || place.Latitude == nil || place.Radius == nil {
 			continue
 		}
-		address := strings.TrimSpace(strings.TrimSpace(place.Address) + " " + strings.TrimSpace(place.Center))
-		center := Location{Address: address, Longitude: float64(*place.Longitude), Latitude: float64(*place.Latitude)}
+		center := Location{Longitude: float64(*place.Longitude), Latitude: float64(*place.Latitude)}
 		radius := float64(*place.Radius)
-		if center.validate() != nil || math.IsNaN(radius) || math.IsInf(radius, 0) || radius <= 0 || radius > math.Pi*earthRadiusMeters {
+		if center.validateCoordinates() != nil || math.IsNaN(radius) || math.IsInf(radius, 0) || radius <= 0 || radius > math.Pi*earthRadiusMeters {
 			continue
 		}
 		// 球面圆内按面积采样，最大偏移保留半径的 10% 余量。
@@ -29,7 +27,7 @@ func randomAllowedLocation(places []AllowedLocation) (Location, error) {
 		newLatitude := math.Asin(math.Max(-1, math.Min(1, latitudeSin)))
 		newLongitude := longitude + math.Atan2(math.Sin(bearing)*math.Sin(angle)*math.Cos(latitude), math.Cos(angle)-math.Sin(latitude)*math.Sin(newLatitude))
 		newLongitude = math.Mod(newLongitude+3*math.Pi, 2*math.Pi) - math.Pi
-		return Location{Address: address, Longitude: newLongitude * 180 / math.Pi, Latitude: newLatitude * 180 / math.Pi}, nil
+		return Location{Longitude: newLongitude * 180 / math.Pi, Latitude: newLatitude * 180 / math.Pi}, nil
 	}
-	return Location{}, errors.New("任务缺少有效的允许地点、中心坐标或半径，请显式提供地址和经纬度")
+	return Location{}, errors.New("任务缺少有效的允许地点中心坐标或半径，请显式提供经纬度")
 }

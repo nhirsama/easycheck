@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -162,7 +163,7 @@ func TestHelpHidesEnvironmentConfig(t *testing.T) {
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
-	for _, command := range []string{"login", "check", "list", "detail", "sign"} {
+	for _, command := range []string{"login", "list", "detail", "sign"} {
 		for _, argument := range []string{"-help", "-unknown-option"} {
 			t.Run(command+"/"+argument, func(t *testing.T) {
 				var output, diagnostics bytes.Buffer
@@ -261,18 +262,28 @@ func TestLoginFailures(t *testing.T) {
 	}
 }
 
-func TestCheckMode(t *testing.T) {
-	t.Setenv("EASYCHECK_USERNAME", "")
-	t.Setenv("EASYCHECK_PASSWORD", "")
-	var posts atomic.Int32
-	server := loginFixture(t, false, 200, 200, &posts)
+func TestCheckCommandAndFlagAreRemoved(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+	}))
 	defer server.Close()
+	t.Setenv("EASYCHECK_BASE_URL", server.URL+"/qdgj/")
+	t.Setenv("EASYCHECK_USERNAME", "fixture-user")
+	t.Setenv("EASYCHECK_PASSWORD", "fixture-password")
+	for _, args := range [][]string{{"check"}, {"check", "--help"}, {"help", "check"}, {"-check"}, {"login", "--check"}} {
+		err := run(args, strings.NewReader(""), io.Discard, io.Discard)
+		var usage *usageError
+		if !errors.As(err, &usage) {
+			t.Errorf("removed check entry accepted: %v (%v)", args, err)
+		}
+	}
 	var output bytes.Buffer
-	if err := run([]string{"-base-url", server.URL + "/qdgj/", "-check"}, strings.NewReader(""), &output, io.Discard); err != nil {
+	if err := run([]string{"--help"}, strings.NewReader(""), &output, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if posts.Load() != 0 || !strings.Contains(output.String(), "需要验证码：false") {
-		t.Fatalf("check mode submitted login or returned wrong status: %s", &output)
+	if calls.Load() != 0 || strings.Contains(output.String(), "检查手机端入口和验证码状态") {
+		t.Fatalf("removed check entry sent requests or remains in help: calls=%d output=%s", calls.Load(), &output)
 	}
 }
 

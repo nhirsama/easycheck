@@ -4,7 +4,7 @@
 
 ## Go 包调用
 
-包路径为 `easycheck/qdgj`，需要 Go 1.24+，仅依赖标准库。
+包路径为 `easycheck/qdgj`，需要 Go 1.24+。`qdgj` 包仅依赖标准库，CLI 的 cron 调度使用 `github.com/robfig/cron/v3`。
 
 ### 导入
 
@@ -122,10 +122,10 @@ func main() {
 `ListTasks` 返回 `Tasks`、`PageNum`、`PageSize`、`PageCount`、`Total` 和完整 `RawResponse`。零值分页选项默认第一页、每页 10 条，不自动翻页。
 
 ```go
-detail, err := client.GetTask(ctx, taskID, batchID)
+detail, err := client.GetTask(ctx, "", batchID)
 ```
 
-`TaskID`、`BatchID` 对应接口字段 `rwid`、`pcid`，应从最新列表取得。`TaskDetail` 嵌入 `Task`，包含签到方式、批次状态、签到状态、时间、位置范围、照片要求等，并保留完整 `RawResponse`。
+`TaskID`、`BatchID` 对应接口字段 `rwid`、`pcid`。按批次查询时只需从最新列表取得 `BatchID`，将 `taskID` 留空；也保留按任务 ID 查询的用法，两种 ID 至少提供一个。`TaskDetail` 嵌入 `Task`，包含签到方式、批次状态、签到状态、时间、位置范围、照片要求等，并保留完整 `RawResponse`。
 
 服务端的坐标和半径支持数字、数字字符串及 `null`，统一解码为 `*Number`：nil 表示缺失，否则用 `float64(*value)` 读取。时间保留原始字符串。
 
@@ -137,24 +137,39 @@ detail, err := client.GetTask(ctx, taskID, batchID)
 
 ```go
 response, err := client.SignIn(ctx, qdgj.SignInRequest{
-    TaskID: taskID,
     BatchID: batchID,
     UseAllowedLocation: true,
     PhotoID: nil,
 })
 ```
 
-`UseAllowedLocation: true` 会查询当前批次详情，从第一个有效的允许地点读取地址、中心经纬度和半径。地址由地点名称和文字地址合并，坐标每次在半径的 90% 内随机生成。该地点的地址、经纬度和正数半径须完整有效。
+`SignInRequest.Validate()` 可在不联网的情况下预先校验批次、定位和备注；`SignIn` 内部同样执行此校验。`ValidateOptions()` 仅校验定位和备注，允许在自动发现批次 ID 前检查配置。
 
-传入 `Location: qdgj.Location{Address: address, Longitude: longitude, Latitude: latitude}` 可使用自定义定位，此时 `UseAllowedLocation` 保持 false。两种定位来源择一使用。自定义定位会校验地址非空、坐标为有限数字，经度范围为 `[-180, 180]`、纬度范围为 `[-90, 90]`。无照片时 `PhotoID: nil` 编码为 JSON null；需要照片时传入已取得的有效文件值。
+CLI 的 `sign --cron '0 8 * * *'` 通过 `robfig/cron/v3` 常驻周期调度，不要求提前提供批次 ID。每次触发重新加载会话、翻页查询列表，为当前窗口内未签到的定位批次逐个调用 `SignInIfActive`；前一轮未完成时跳过重叠触发，本轮失败记录日志后等待下一次触发。`sign` 不带 `--cron`、`--pcid` 时立即自动执行一轮。Go 包的签到方法本身保持立即执行，不隐式等待或重试。
+
+`task.SignInAvailable(now)` 判断是否为“进行中”、尚未“已签到”的定位任务，并满足 `kssj <= now < jssj`。原站无时区日期按 `Asia/Shanghai` 解释，也支持 RFC3339；时间缺失或无效时返回错误。
+
+`client.SignInIfActive(ctx, request)` 与 `SignIn` 使用相同参数，但总是重新查询批次详情并核对状态和时间窗口；地址解析后也会再次检查窗口尚未关闭。任务当前已签到、不在窗口内或方式不支持时返回 `ErrTaskNotActive`，不发送签到请求。`SignIn` 的手动立即提交行为保持不变。
+
+`TaskID` 可省略，客户端按当前用户和 `BatchID` 查询详情并自动补齐。`UseAllowedLocation: true` 复用这次详情查询，从第一个有效的允许地点读取中心经纬度和正数半径。坐标每次在半径的 90% 内生成，随后用当前站点配置的腾讯地图解析该坐标的地址，不再拼接固定地点名称。允许地点无需提供文字地址。
+
+传入 `Location: qdgj.Location{Longitude: longitude, Latitude: latitude}` 可使用自定义坐标并自动解析地址，此时 `UseAllowedLocation` 保持 false。显式提供非空 `Address` 时跳过地图解析。两种坐标来源择一使用。自定义坐标必须为有限数字，经度范围为 `[-180, 180]`、纬度范围为 `[-90, 90]`，坐标系须与原站地图一致。无照片时 `PhotoID: nil` 编码为 JSON null；需要照片时传入已取得的有效文件值。
+
+也可以只解析地址而不签到：
+
+```go
+address, err := client.ReverseGeocode(ctx, longitude, latitude)
+```
+
+`ReverseGeocode` 使用当前会话读取 `api/zhxg-xtgl/openapi/getCsszBatch` 的地图配置，优先使用 `ZHXG_QDGJ_DTKEY` / `ZHXG_QDGJ_DTLX`，缺省时使用全局配置。目前支持类型 `3`（腾讯地图），通过逆地址解析接口返回的 `result.address` 填充 `qddd`。地图请求使用独立的无 Cookie 客户端，不附加站点令牌、用户或组织身份；地图 Key 不写入会话文件。
 
 范围外分支使用 `OutsideRange: true` 及必填 `Remark`，备注最多 100 个 UTF-16 字符；是否允许该分支取决于服务端任务规则。普通提交不附加范围外字段。
 
-默认地点模式执行一次详情查询，自定义定位模式直接提交；签到提交均为一次。超时或连接中断时，调用方可先用 `GetTask` 核对服务器状态。二维码签到和照片上传尚未封装。
+默认地点模式或省略 `TaskID` 时执行一次详情查询。需要自动地址时另执行一次地图配置查询和一次逆地址解析；同时指定 `TaskID` 和含地址的自定义定位时直接提交。查询失败、批次不匹配、响应缺少任务 ID 或地址解析失败时不提交；地址解析失败不会回退到固定地点名称，签到提交均为一次。超时或连接中断时，调用方可先用 `GetTask` 核对服务器状态。二维码签到和照片上传尚未封装。
 
 ### 错误处理
 
-`APIError` 包含 `HTTPStatus`、`Code`、`StatusCode` 和 `Message`，支持 `errors.As`。本地缺少身份、缺少验证码回调和任务不存在，分别返回 `ErrNotAuthenticated`、`ErrCaptchaRequired`、`ErrTaskNotFound`，支持 `errors.Is`。远端会话过期以相应 `APIError` 返回。
+`APIError` 包含 `HTTPStatus`、`Code`、`StatusCode` 和 `Message`，支持 `errors.As`。本地缺少身份、缺少验证码回调和任务不存在，分别返回 `ErrNotAuthenticated`、`ErrCaptchaRequired`、`ErrTaskNotFound`，支持 `errors.Is`。`SignInIfActive` 发现当前任务不可自动签到时返回 `ErrTaskNotActive`。远端会话过期以相应 `APIError` 返回。
 
 网络方法均接受 `context.Context`，取消错误保留包装链。完成登录或会话加载后可并发查询；不要在同一客户端登录或加载会话期间并发进行其他操作。
 
@@ -217,12 +232,11 @@ POST <BASE_URL>api/sm-registration/qdgjQdrw/queryQdrw
 ```json
 {
   "userid": "<user-id>",
-  "rwid": "<task-id>",
   "pcid": "<batch-id>"
 }
 ```
 
-任务位于 `data.list`。`rwid` 是任务 ID，`pcid` 是批次 ID；循环任务可共用任务 ID，但不能据历史批次推定当前批次。`status` 表示批次状态，`zt` 表示当前用户签到状态，`kssj`、`jssj` 表示起止时间。
+任务位于 `data.list`。`rwid` 是任务 ID，`pcid` 是批次 ID；按批次查询不必提供 `rwid`，签到时从该批次详情自动取得。也可在查询中附加 `rwid` 以限定任务。循环任务可共用任务 ID，但不能据历史批次推定当前批次。`status` 表示批次状态，`zt` 表示当前用户签到状态，`kssj`、`jssj` 表示起止时间。
 
 `qdfs` 为签到方式，`qdtj` 为范围条件，`qddds` 为允许地点列表，`sfsctp`、`pzyq` 为照片要求。历史位置及照片字段可能为 null。查询成功判断为 `code == 200`，同时检查非零的 `meta.statusCode` 是否为 200。
 
@@ -236,12 +250,12 @@ POST <BASE_URL>api/sm-registration/qdgjQdrw/startSign
 | --- | --- |
 | `rwid` / `pcid` | 最新查询得到的任务 / 批次 ID |
 | `userid` | 当前会话用户 ID |
-| `qddd` | 签到地址，来自任务允许地点或自定义定位 |
+| `qddd` | 按坐标解析得到的地址，或显式提供的自定义地址 |
 | `jdzb` / `wdzb` | 签到经度 / 纬度，JSON 数字 |
 | `qdtp` | 照片文件值，无照片时为 null |
 | `sfxdfwwqd` / `bz` | 范围外分支附加 `"1"` 和备注 |
 
-包通过 `SignIn` 方法调用此接口。`UseAllowedLocation: true` 时先查询批次详情，用允许地点的名称和地址填充 `qddd`，并在该地点半径的 90% 内生成随机坐标。CLI 省略地址和经纬度时使用此模式；同时提供三个定位参数时使用自定义定位。签到提交为一次，服务端允许的时间、范围与照片条件以当前任务为准。
+包通过 `SignIn` 方法调用此接口。`UseAllowedLocation: true` 时先查询批次详情，在允许地点半径的 90% 内生成坐标，再按坐标解析地址并填充 `qddd`。CLI 省略地址和经纬度时使用此模式；同时提供经度和纬度时使用自定义坐标，`--address` 为可选的文字地址覆盖。签到提交为一次，服务端允许的时间、范围与照片条件以当前任务为准。
 
 二维码结果路由 `#/mobile/student/qrResult` 在兼容前端中可能自动触发提交，不属于只读详情页面。该分支尚未封装。
 

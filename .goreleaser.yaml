@@ -37,34 +37,8 @@ archives:
       - linux
       - windows
     formats:
-      - tar.gz
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
+      - binary
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    files:
-      - README.md
-      - docs/CLI.md
-      - docs/API.md
-
-nfpms:
-  - id: deb
-    package_name: easycheck
-    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
-    ids:
-      - linux
-    formats:
-      - deb
-    maintainer: EasyCheck Maintainers <easycheck@example.invalid>
-    description: Mobile check-in client
-    section: utils
-    priority: optional
-    contents:
-      - src: README.md
-        dst: /usr/share/doc/easycheck/README.md
-      - src: docs/CLI.md
-        dst: /usr/share/doc/easycheck/CLI.md
 
 checksum:
   name_template: checksums.txt

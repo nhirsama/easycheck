@@ -37,15 +37,14 @@ func (s commandSpec) path() string {
 }
 
 type command struct {
-	spec        commandSpec
-	flags       *flag.FlagSet
-	hiddenFlags map[string]bool
-	config      qdgj.Config
-	validate    func() error
-	run         func(context.Context) error
+	spec     commandSpec
+	flags    *flag.FlagSet
+	config   qdgj.Config
+	validate func() error
+	run      func(context.Context) error
 }
 
-var commands = []commandSpec{loginSpec, checkSpec, listSpec, detailSpec, signSpec}
+var commands = []commandSpec{loginSpec, listSpec, detailSpec, signSpec}
 
 // Run 解析命令并通过指定的输入输出执行操作。
 func Run(ctx context.Context, args []string, input io.Reader, output, diagnostics io.Writer) error {

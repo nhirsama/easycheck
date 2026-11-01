@@ -56,7 +56,7 @@ func (a *app) printCommandHelp(c *command) error {
 func hasCommandFlags(c *command) bool {
 	found := false
 	c.flags.VisitAll(func(f *flag.Flag) {
-		if !isCommonFlag(f.Name) && !c.hiddenFlags[f.Name] {
+		if !isCommonFlag(f.Name) {
 			found = true
 		}
 	})
@@ -66,7 +66,7 @@ func hasCommandFlags(c *command) bool {
 func printFlags(output io.Writer, c *command, common bool) {
 	table := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
 	c.flags.VisitAll(func(f *flag.Flag) {
-		if isCommonFlag(f.Name) != common || c.hiddenFlags[f.Name] {
+		if isCommonFlag(f.Name) != common {
 			return
 		}
 		name, description := flag.UnquoteUsage(f)

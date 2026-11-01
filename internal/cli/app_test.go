@@ -32,7 +32,7 @@ func TestExecuteExitCodesAndStreams(t *testing.T) {
 		{name: "unknown option", args: []string{"list", "--unknown-option"}, code: 2},
 		{name: "invalid option value", args: []string{"list", "--page", "text"}, code: 2},
 		{name: "invalid pagination", args: []string{"list", "--page", "0"}, code: 2},
-		{name: "missing task", args: []string{"detail"}, code: 2},
+		{name: "missing batch", args: []string{"detail"}, code: 2},
 		{name: "missing session", args: []string{"list"}, code: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,7 +85,7 @@ func TestCanceledContextStopsSubmission(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var output bytes.Buffer
-	err := Run(ctx, []string{"sign", "--base-url", base, "--session", session, "--rwid", "task", "--pcid", "batch"}, strings.NewReader(""), &output, io.Discard)
+	err := Run(ctx, []string{"sign", "--base-url", base, "--session", session, "--pcid", "batch"}, strings.NewReader(""), &output, io.Discard)
 	if !errors.Is(err, context.Canceled) || calls.Load() != 0 || output.Len() != 0 {
 		t.Fatalf("canceled command: err=%v requests=%d output=%q", err, calls.Load(), output.String())
 	}

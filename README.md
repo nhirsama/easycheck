@@ -1,6 +1,15 @@
 # EasyCheck
 
-移动签到 Go 客户端，支持登录、任务查询和定位签到。需要 Go 1.24+，仅依赖标准库。
+移动签到 Go 客户端，支持登录、任务查询、定位签到和内置 cron 调度。需要 Go 1.24+。
+
+## 下载可执行文件
+
+GitHub Release 直接提供 Linux 和 Windows 的 amd64 可执行文件，无需解压或安装：
+
+- Linux：`easycheck_<版本>_linux_amd64`，下载后执行 `chmod +x <文件名>`。
+- Windows：`easycheck_<版本>_windows_amd64.exe`。
+
+下文的 `go run ./cmd/easycheck` 可替换为下载的可执行文件路径。
 
 ## 最小使用
 
@@ -23,25 +32,63 @@ go run ./cmd/easycheck list
 
 登录成功后，会话保存到 `session.json`，后续命令自动使用。验证码开启时按提示输入。
 
-从列表取得任务 ID（`rwid`）和批次 ID（`pcid`），查看详情或提交签到：
+从列表取得批次 ID（`pcid`），即可查看详情或提交签到，无需提供 `rwid`：
 
 ```sh
-go run ./cmd/easycheck detail --rwid '<task-id>' --pcid '<batch-id>'
-go run ./cmd/easycheck sign --rwid '<task-id>' --pcid '<batch-id>'
+go run ./cmd/easycheck detail --pcid '<batch-id>'
+go run ./cmd/easycheck sign --pcid '<batch-id>'
 ```
 
-签到默认从任务允许地点生成定位。更多选项使用 `go run ./cmd/easycheck help sign` 查看。
+签到默认从任务允许地点生成坐标，再使用原站配置的腾讯地图自动解析位置名称，不再沿用固定地点名。自定义坐标时只需提供 `--longitude` 和 `--latitude`；显式提供 `--address` 可跳过地址解析。更多选项使用 `go run ./cmd/easycheck help sign` 查看。
+
+## 定时签到
+
+```sh
+# 常驻运行，每天北京时间 08:00 自动查询并签到当前任务。
+go run . sign --cron '0 8 * * *'
+
+# 每 5 分钟检查一次。
+go run . sign --cron '*/5 * * * *'
+```
+
+使用 `github.com/robfig/cron/v3` 在程序内调度，无需系统 crontab。表达式为五段：`分 时 日 月 星期`，默认时区 `Asia/Shanghai`，可用 `--timezone` 修改。程序持续运行，`Ctrl+C` 停止；已移除原来的 `--at`、`--after`。
+
+每次触发重新读取会话、翻页查询列表，为当前窗口内未签到的定位任务逐个复查并签到，无需提前知道 `pcid`。跳过已签到、未开始、已结束和二维码任务；前一轮未完成时跳过重叠触发，本轮失败不终止调度。直接运行 `go run . sign` 则立即执行一轮后退出。详见 [CLI 使用说明](docs/CLI.md#定时签到)。
+
+### 成功通知
+
+cron 模式支持 Telegram 和飞书，可单独启用或同时启用。在 `.env` 中填写需要的渠道，未填写的渠道关闭：
+
+```dotenv
+EASYCHECK_TG_BOT_TOKEN='your-bot-token'
+EASYCHECK_TG_CHAT_ID='your-chat-id'
+EASYCHECK_FEISHU_WEBHOOK_URL='https://open.feishu.cn/open-apis/bot/v2/hook/your-webhook-id'
+# 飞书机器人启用签名校验时填写，否则留空。
+EASYCHECK_FEISHU_SECRET=''
+EASYCHECK_NOTIFY_TIMEOUT=10s
+```
+
+每轮实际成功签到至少一项后，各渠道发送一次汇总（时间、成功任务名称和批次 ID、成功/失败/跳过数量）；没有成功项不通知，部分成功仍通知。通知失败只记录日志，不中断后续调度，不重试签到。不带 `--cron` 的手动签到不发通知。
+
+Compose 会传入这些变量；本机 CLI 需先导出到环境中。飞书签名等渠道配置见 [通知说明](docs/CLI.md#成功通知)。
 
 ## Docker
 
+推送 `v*` 标签时，CI 将镜像发布到 `ghcr.io/nhirsama/easycheck`，镜像标签与 Git 标签一致（如 `v1.2.3`）。正式版本同时更新 `latest`，预发布版本不更新 `latest`。
+
 ```sh
-docker build -t easycheck .
-docker run --rm -it \
-  -e EASYCHECK_BASE_URL='https://example.invalid/qdgj/' \
-  -e EASYCHECK_USERNAME='example-user' \
-  -e EASYCHECK_PASSWORD='replace-with-password' \
-  -v easycheck-data:/data \
-  easycheck login
+git clone https://github.com/nhirsama/easycheck.git
+cd easycheck
+cp .env.example .env
+# 编辑 .env，填写站点、账号、密码和 cron 表达式。
+docker compose up -d
+docker compose logs -f
 ```
 
-后续用同一个 `/data` 卷运行 `list`、`detail` 或 `sign`，即可复用登录会话。
+`compose.yaml` 默认使用 GHCR 的 `latest` 镜像，也可以通过 `docker compose up -d --build` 从本地源码构建。容器每次启动先登录，成功后进入内置 cron 调度，自动查找当前窗口内的任务，无需填写 `pcid`。登录失败时不启动调度。
+
+Compose 自动读取 `.env`；`EASYCHECK_CRON` 默认是 `'*/5 * * * *'`（每 5 分钟），`EASYCHECK_TIMEZONE` 默认是 `Asia/Shanghai`。例如每天北京时间 08:00，设置 `EASYCHECK_CRON='0 8 * * *'`。修改配置后再次运行 `docker compose up -d` 应用。
+
+**不挂载任何会话卷**：会话只写入容器内的 `/data/session.json`，删除或重建容器后丢弃，无需提前准备会话文件。会话失效时运行 `docker compose restart` 重新登录；停止并移除容器使用 `docker compose down`。
+
+无人值守启动要求站点未开启登录验证码；开启时仍需交互输入，本配置不自动识别验证码。

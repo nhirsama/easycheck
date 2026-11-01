@@ -35,11 +35,11 @@ func TestRandomAllowedLocationStaysWithinRadius(t *testing.T) {
 			seen := make(map[Location]bool)
 			for range 256 {
 				point, err := randomAllowedLocation([]AllowedLocation{place})
-				if err != nil || point.validate() != nil {
+				if err != nil || point.validateCoordinates() != nil {
 					t.Fatalf("invalid sampled location: %+v (%v)", point, err)
 				}
-				if point.Address != "fixture building fixture campus" {
-					t.Fatalf("default address lost: %q", point.Address)
+				if point.Address != "" {
+					t.Fatalf("sample must resolve its address from coordinates, got %q", point.Address)
 				}
 				distance := locationDistance(center, point)
 				if math.IsNaN(distance) || distance > 900.001 {
@@ -58,7 +58,6 @@ func TestRandomAllowedLocationRejectsIncompletePlaces(t *testing.T) {
 	valid := AllowedLocation{Address: "fixture", Longitude: locationNumber(10.5), Latitude: locationNumber(20.5), Radius: locationNumber(1000)}
 	invalid := []AllowedLocation{{}}
 	for _, change := range []func(*AllowedLocation){
-		func(p *AllowedLocation) { p.Address = " " },
 		func(p *AllowedLocation) { p.Longitude = nil },
 		func(p *AllowedLocation) { p.Latitude = nil },
 		func(p *AllowedLocation) { p.Radius = nil },
@@ -82,9 +81,9 @@ func TestRandomAllowedLocationRejectsIncompletePlaces(t *testing.T) {
 	if _, err := randomAllowedLocation(nil); err == nil {
 		t.Fatal("empty places accepted")
 	}
-	valid.Address, valid.Center = "", "fixture center"
+	valid.Address, valid.Center = "", ""
 	point, err := randomAllowedLocation(append(invalid, valid))
-	if err != nil || point.Address != "fixture center" {
+	if err != nil || point.Address != "" || point.validateCoordinates() != nil {
 		t.Fatalf("complete place not selected: %+v (%v)", point, err)
 	}
 }
@@ -111,7 +110,7 @@ func TestSignInWithAllowedLocationRefreshesDetailAndSubmitsOnce(t *testing.T) {
 			}
 			point := Location{Address: body.Address, Longitude: body.Longitude, Latitude: body.Latitude}
 			center := Location{Longitude: float64(10 + queries), Latitude: 20.5}
-			if point.Address != "fixture building fixture campus" || locationDistance(center, point) > 900.001 || body.UserID != "fixture-user" || body.TaskID != "task" || body.BatchID != "batch" {
+			if point.Address != fixtureMapAddress(point.Longitude, point.Latitude) || locationDistance(center, point) > 900.001 || body.UserID != "fixture-user" || body.TaskID != "task" || body.BatchID != "batch" {
 				t.Error("sign payload did not use current allowed place")
 			}
 			if point == previous {
@@ -128,7 +127,7 @@ func TestSignInWithAllowedLocationRefreshesDetailAndSubmitsOnce(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := restoredClient(t, server.URL)
+	client := restoredGeocodingClient(t, server.URL)
 	request := SignInRequest{TaskID: "task", BatchID: "batch", UseAllowedLocation: true}
 	if _, err := client.SignIn(context.Background(), request); err != nil {
 		t.Fatal(err)

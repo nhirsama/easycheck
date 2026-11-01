@@ -55,21 +55,16 @@ func (o *responseOptions) bind(flags *flag.FlagSet) {
 }
 
 type taskOptions struct {
-	taskID  string
 	batchID string
 }
 
 func (o *taskOptions) bind(flags *flag.FlagSet) {
-	flags.StringVar(&o.taskID, "rwid", "", "任务 `ID`，从 list 结果取得")
 	flags.StringVar(&o.batchID, "pcid", "", "批次 `ID`，从 list 结果取得")
 }
 
-func (o taskOptions) validate(requireBatch bool) error {
-	if strings.TrimSpace(o.taskID) == "" {
-		return errors.New("请提供 --rwid 任务 ID")
-	}
-	if requireBatch && strings.TrimSpace(o.batchID) == "" {
-		return errors.New("签到须提供 --rwid 和 --pcid")
+func (o taskOptions) validate() error {
+	if strings.TrimSpace(o.batchID) == "" {
+		return errors.New("请提供 --pcid 批次 ID")
 	}
 	return nil
 }

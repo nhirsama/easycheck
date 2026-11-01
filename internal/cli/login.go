@@ -24,12 +24,7 @@ func (a *app) configureLogin(c *command) {
 	c.stringFlag(&c.config.Password, "password", c.config.Password, "登录 `PASSWORD`，默认读取 EASYCHECK_PASSWORD")
 	passwordStdin := c.flags.Bool("password-stdin", false, "从标准输入第一行读取密码")
 	captchaPath := c.flags.String("captcha-file", "captcha.png", "将验证码图片保存到 `FILE`")
-	check := c.flags.Bool("check", false, "检查入口与验证码状态")
-	c.hiddenFlags = map[string]bool{"check": true}
 	c.validate = func() error {
-		if *check {
-			return nil
-		}
 		if *passwordStdin && c.flagProvided("password") {
 			return errors.New("--password 和 --password-stdin 须择一使用")
 		}
@@ -42,9 +37,6 @@ func (a *app) configureLogin(c *command) {
 		return nil
 	}
 	c.run = func(ctx context.Context) error {
-		if *check {
-			return a.check(ctx, c)
-		}
 		reader := bufio.NewReader(a.input)
 		if *passwordStdin {
 			var err error

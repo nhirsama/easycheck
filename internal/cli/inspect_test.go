@@ -68,7 +68,7 @@ func TestInspectOnlyQueriesAndKeepsSavedSession(t *testing.T) {
 		out := filepath.Join(dir, fmt.Sprintf("response-%t.json", detail))
 		args := []string{"-session", path, "-out", out}
 		if detail {
-			args = append(args, "-rwid", "task", "-pcid", "batch")
+			args = append(args, "-pcid", "batch")
 		}
 		var output bytes.Buffer
 		if err := runInspect(args, &output, io.Discard); err != nil {
@@ -79,7 +79,7 @@ func TestInspectOnlyQueriesAndKeepsSavedSession(t *testing.T) {
 		}
 		canonical := []string{"list", "--session", path}
 		if detail {
-			canonical = []string{"detail", "--session", path, "--rwid", "task", "--pcid", "batch"}
+			canonical = []string{"detail", "--session", path, "--pcid", "batch"}
 		}
 		var expected bytes.Buffer
 		if err := run(canonical, strings.NewReader(""), &expected, io.Discard); err != nil {
@@ -100,5 +100,19 @@ func TestInspectOnlyQueriesAndKeepsSavedSession(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) || calls != 4 {
 		t.Fatalf("session changed or requests retried: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestInspectRejectsEmptyBatchBeforeNetwork(t *testing.T) {
+	var calls int
+	base, session := taskCLIFixture(t, func(w http.ResponseWriter, r *http.Request) { calls++ })
+	for _, batch := range []string{"", " ", "\t"} {
+		args := []string{"--base-url", base, "--session", session, "--pcid", batch}
+		if err := runInspect(args, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "--pcid") {
+			t.Errorf("empty batch accepted or wrong error: %q (%v)", batch, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("empty batch sent %d requests", calls)
 	}
 }

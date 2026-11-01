@@ -1,0 +1,24 @@
+services:
+  easycheck:
+    image: ghcr.io/nhirsama/easycheck:latest
+    build: .
+    init: true
+    restart: unless-stopped
+    environment:
+      EASYCHECK_BASE_URL: "${EASYCHECK_BASE_URL:?请在 .env 中填写 EASYCHECK_BASE_URL}"
+      EASYCHECK_USERNAME: "${EASYCHECK_USERNAME:?请在 .env 中填写 EASYCHECK_USERNAME}"
+      EASYCHECK_PASSWORD: "${EASYCHECK_PASSWORD:?请在 .env 中填写 EASYCHECK_PASSWORD}"
+      EASYCHECK_SESSION_FILE: /data/session.json
+      EASYCHECK_CRON: "${EASYCHECK_CRON:-*/5 * * * *}"
+      EASYCHECK_TIMEZONE: "${EASYCHECK_TIMEZONE:-Asia/Shanghai}"
+      EASYCHECK_TG_BOT_TOKEN: "${EASYCHECK_TG_BOT_TOKEN:-}"
+      EASYCHECK_TG_CHAT_ID: "${EASYCHECK_TG_CHAT_ID:-}"
+      EASYCHECK_FEISHU_WEBHOOK_URL: "${EASYCHECK_FEISHU_WEBHOOK_URL:-}"
+      EASYCHECK_FEISHU_SECRET: "${EASYCHECK_FEISHU_SECRET:-}"
+      EASYCHECK_NOTIFY_TIMEOUT: "${EASYCHECK_NOTIFY_TIMEOUT:-10s}"
+      TZ: "${EASYCHECK_TIMEZONE:-Asia/Shanghai}"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        easycheck login
+        exec easycheck sign --cron "$${EASYCHECK_CRON}" --timezone "$${EASYCHECK_TIMEZONE}"

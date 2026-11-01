@@ -8,9 +8,9 @@ import (
 var detailSpec = commandSpec{
 	name:        "detail",
 	summary:     "查看任务和批次详情",
-	syntax:      "--rwid ID [--pcid ID] [选项]",
-	description: "展示签到时间、状态、允许地点和照片要求。省略 --pcid 时按任务查询。",
-	examples:    []string{"easycheck detail --rwid '<task-id>' --pcid '<batch-id>'", "easycheck detail --rwid '<task-id>' --out tasks-session.json"},
+	syntax:      "--pcid ID [选项]",
+	description: "按批次 ID 查询详情，展示签到时间、状态、允许地点和照片要求，无需提供任务 ID。",
+	examples:    []string{"easycheck detail --pcid '<batch-id>'", "easycheck detail --pcid '<batch-id>' --out tasks-session.json"},
 	setup:       (*app).configureDetail,
 }
 
@@ -19,7 +19,7 @@ func (a *app) configureDetail(c *command) {
 	var response responseOptions
 	task.bind(c.flags)
 	response.bind(c.flags)
-	c.validate = func() error { return task.validate(false) }
+	c.validate = func() error { return task.validate() }
 	c.run = func(ctx context.Context) error { return a.detail(ctx, c, task, response) }
 }
 
@@ -28,7 +28,7 @@ func (a *app) detail(ctx context.Context, c *command, task taskOptions, response
 	if err != nil {
 		return err
 	}
-	result, err := client.GetTask(ctx, task.taskID, task.batchID)
+	result, err := client.GetTask(ctx, "", task.batchID)
 	if err != nil {
 		return err
 	}

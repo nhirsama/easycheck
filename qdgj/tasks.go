@@ -9,6 +9,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
@@ -133,24 +134,26 @@ func (c *Client) ListTasks(ctx context.Context, options ListOptions) (*TaskList,
 	return c.queryTasks(ctx, taskQuery{Pagination: &pagination{Page: options.Page, PageSize: options.PageSize}})
 }
 
-// GetTask 按任务 ID 和批次 ID 查询详情。batchID 为空时按任务 ID 查询。
+// GetTask 按任务 ID 或批次 ID 查询详情，至少提供其中一个。
+// taskID 为空时仅按 batchID 查询，无需提前取得任务 ID。
 func (c *Client) GetTask(ctx context.Context, taskID, batchID string) (*TaskDetail, error) {
-	if strings.TrimSpace(taskID) == "" {
-		return nil, errors.New("TaskID 不能为空")
+	taskID, batchID = strings.TrimSpace(taskID), strings.TrimSpace(batchID)
+	if taskID == "" && batchID == "" {
+		return nil, errors.New("TaskID 和 BatchID 至少提供一个")
 	}
 	result, err := c.queryTasks(ctx, taskQuery{TaskID: taskID, BatchID: batchID})
 	if err != nil {
 		return nil, err
 	}
 	for _, task := range result.Tasks {
-		if task.TaskID == taskID && (batchID == "" || task.BatchID == batchID) {
+		if (taskID == "" || task.TaskID == taskID) && (batchID == "" || task.BatchID == batchID) {
 			return &TaskDetail{Task: task, RawResponse: result.RawResponse}, nil
 		}
 	}
 	return nil, ErrTaskNotFound
 }
 
-// Location 保存签到地址、经度和纬度。
+// Location 保存签到地址、经度和纬度。地址为空时按坐标自动解析。
 type Location struct {
 	Address   string
 	Longitude float64
@@ -158,10 +161,10 @@ type Location struct {
 }
 
 type SignInRequest struct {
-	TaskID   string
+	TaskID   string // 可省略；按 BatchID 查询当前批次详情后自动补齐。
 	BatchID  string
 	Location Location
-	// UseAllowedLocation 从任务允许地点的地址、中心和半径生成范围内的随机定位。
+	// UseAllowedLocation 从任务允许地点的中心和半径生成坐标，再自动解析地址。
 	UseAllowedLocation bool
 	PhotoID            *string // 照片文件标识，nil 编码为 JSON null。
 	OutsideRange       bool
@@ -180,41 +183,95 @@ type signPayload struct {
 	Remark       string  `json:"bz,omitempty"`
 }
 
-// SignIn 根据任务、批次和定位信息发送一次签到请求。
-// UseAllowedLocation 为 true 时先读取批次详情并生成随机定位。
-// TaskID/BatchID 须从最新任务查询取得；成功条件为服务端 code == 200。
-// 请求超时或连接中断后，可通过 GetTask 核对任务状态。
-func (c *Client) SignIn(ctx context.Context, request SignInRequest) (*Response, error) {
-	if strings.TrimSpace(request.TaskID) == "" || strings.TrimSpace(request.BatchID) == "" {
-		return nil, errors.New("TaskID 和 BatchID 不能为空")
+// Validate 在不联网的情况下校验批次、定位与备注参数。
+// 任务是否允许签到、会话是否过期等状态在实际执行时检查。
+func (request SignInRequest) Validate() error {
+	if strings.TrimSpace(request.BatchID) == "" {
+		return errors.New("BatchID 不能为空")
 	}
+	return request.ValidateOptions()
+}
+
+// ValidateOptions 校验定位与备注，不要求批次 ID，供自动发现批次前检查选项。
+func (request SignInRequest) ValidateOptions() error {
 	if request.UseAllowedLocation && request.Location != (Location{}) {
-		return nil, errors.New("UseAllowedLocation 和 Location 请择一配置")
+		return errors.New("UseAllowedLocation 和 Location 请择一配置")
 	}
 	if !request.UseAllowedLocation {
-		if err := request.Location.validate(); err != nil {
-			return nil, err
+		if err := request.Location.validateCoordinates(); err != nil {
+			return err
 		}
 	}
 	if request.OutsideRange {
 		if strings.TrimSpace(request.Remark) == "" || len(utf16.Encode([]rune(request.Remark))) > 100 {
-			return nil, errors.New("范围外签到须提供 1 至 100 个 UTF-16 字符的备注")
+			return errors.New("范围外签到须提供 1 至 100 个 UTF-16 字符的备注")
 		}
 	} else if request.Remark != "" {
-		return nil, errors.New("Remark 仅用于范围外签到")
+		return errors.New("Remark 仅用于范围外签到")
+	}
+	return nil
+}
+
+// SignIn 根据任务、批次和定位信息发送一次签到请求。
+// TaskID 为空或 UseAllowedLocation 为 true 时先读取批次详情。
+// BatchID 须从最新任务查询取得；成功条件为服务端 code == 200。
+// 请求超时或连接中断后，可通过 GetTask 核对任务状态。
+func (c *Client) SignIn(ctx context.Context, request SignInRequest) (*Response, error) {
+	return c.signIn(ctx, request, false)
+}
+
+// SignInIfActive 重新查询批次，仅为当前窗口内未签到的定位任务提交一次签到。
+// 任务已签到、窗口已关闭或方式不支持时返回 ErrTaskNotActive，不提交。
+func (c *Client) SignInIfActive(ctx context.Context, request SignInRequest) (*Response, error) {
+	return c.signIn(ctx, request, true)
+}
+
+func (c *Client) signIn(ctx context.Context, request SignInRequest, onlyActive bool) (*Response, error) {
+	request.TaskID, request.BatchID = strings.TrimSpace(request.TaskID), strings.TrimSpace(request.BatchID)
+	if err := request.Validate(); err != nil {
+		return nil, err
 	}
 	userID, err := c.userID()
 	if err != nil {
 		return nil, err
 	}
 	loc := request.Location
-	if request.UseAllowedLocation {
+	var currentTask *Task
+	if request.TaskID == "" || request.UseAllowedLocation || onlyActive {
 		task, err := c.GetTask(ctx, request.TaskID, request.BatchID)
 		if err != nil {
-			return nil, fmt.Errorf("读取签到允许地点：%w", err)
+			return nil, fmt.Errorf("读取签到批次详情：%w", err)
 		}
-		loc, err = randomAllowedLocation(task.AllowedLocations)
+		request.TaskID = strings.TrimSpace(task.TaskID)
+		if request.TaskID == "" {
+			return nil, errors.New("签到批次详情缺少任务 ID")
+		}
+		if onlyActive {
+			if err := task.requireActive(time.Now()); err != nil {
+				return nil, err
+			}
+			currentTask = &task.Task
+		}
+		if request.UseAllowedLocation {
+			loc, err = randomAllowedLocation(task.AllowedLocations)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	loc.Address = strings.TrimSpace(loc.Address)
+	if loc.Address == "" {
+		loc.Address, err = c.ReverseGeocode(ctx, loc.Longitude, loc.Latitude)
 		if err != nil {
+			return nil, fmt.Errorf("解析签到位置名称：%w", err)
+		}
+	}
+	if err := loc.validate(); err != nil {
+		return nil, err
+	}
+	if currentTask != nil {
+		// 定位和地址解析可能耗时，避免窗口在此期间结束后仍然提交。
+		if err := currentTask.requireActive(time.Now()); err != nil {
 			return nil, err
 		}
 	}
@@ -232,8 +289,15 @@ func (c *Client) SignIn(ctx context.Context, request SignInRequest) (*Response, 
 }
 
 func (loc Location) validate() error {
-	if strings.TrimSpace(loc.Address) == "" || math.IsNaN(loc.Longitude) || math.IsInf(loc.Longitude, 0) || math.IsNaN(loc.Latitude) || math.IsInf(loc.Latitude, 0) || loc.Longitude < -180 || loc.Longitude > 180 || loc.Latitude < -90 || loc.Latitude > 90 {
+	if strings.TrimSpace(loc.Address) == "" || loc.validateCoordinates() != nil {
 		return errors.New("须提供定位地址及有效的经纬度")
+	}
+	return nil
+}
+
+func (loc Location) validateCoordinates() error {
+	if math.IsNaN(loc.Longitude) || math.IsInf(loc.Longitude, 0) || math.IsNaN(loc.Latitude) || math.IsInf(loc.Latitude, 0) || loc.Longitude < -180 || loc.Longitude > 180 || loc.Latitude < -90 || loc.Latitude > 90 {
+		return errors.New("须提供有效的经纬度，经度范围 [-180, 180]，纬度范围 [-90, 90]")
 	}
 	return nil
 }

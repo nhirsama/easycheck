@@ -280,7 +280,7 @@ func TestNoSignReplayOrRedirectAndValidationBeforeNetwork(t *testing.T) {
 		t.Fatalf("redirect followed: calls=%d err=%v", calls, err)
 	}
 	for _, invalid := range []SignInRequest{
-		{}, {TaskID: "task", BatchID: "batch"},
+		{}, {TaskID: "task", BatchID: "batch", Location: Location{Longitude: 181}},
 		{TaskID: "task", BatchID: "batch", UseAllowedLocation: true, Location: valid.Location},
 		{TaskID: "task", BatchID: "batch", UseAllowedLocation: true, OutsideRange: true},
 		{TaskID: "task", BatchID: "batch", Location: Location{Address: "fixture", Longitude: math.NaN()}},
