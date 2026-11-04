@@ -27,7 +27,7 @@ func clearNotificationEnv(t *testing.T) {
 
 func TestCronNotifierFromEnv(t *testing.T) {
 	clearNotificationEnv(t)
-	notifier, err := cronNotifierFromEnv()
+	notifier, err := notifierFromEnv()
 	if err != nil || notifier != nil {
 		t.Fatalf("notification should be disabled by default: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestCronNotifierFromEnv(t *testing.T) {
 	t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", " https://open.feishu.cn/open-apis/bot/v2/hook/fixture-hook ")
 	t.Setenv("EASYCHECK_FEISHU_SECRET", "fixture-feishu-secret")
 	t.Setenv("EASYCHECK_NOTIFY_TIMEOUT", " 2s ")
-	notifier, err = cronNotifierFromEnv()
+	notifier, err = notifierFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestCronNotifierFromEnv(t *testing.T) {
 			} else {
 				t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", "https://open.feishu.cn/open-apis/bot/v2/hook/fixture")
 			}
-			notifier, err := cronNotifierFromEnv()
+			notifier, err := notifierFromEnv()
 			if err != nil || notifier == nil || len(notifier.channels) != 1 || notifier.channels[0].name != channel || notifier.client.Timeout != 10*time.Second {
 				t.Fatalf("single channel failed: %v", err)
 			}
@@ -83,7 +83,7 @@ func TestCronNotifierRejectsIncompleteOrInvalidEnv(t *testing.T) {
 		for key, value := range values {
 			t.Setenv(key, value)
 		}
-		_, err := cronNotifierFromEnv()
+		_, err := notifierFromEnv()
 		if err == nil || strings.Contains(err.Error(), "fixture-secret") {
 			t.Fatalf("invalid config accepted or secret leaked: %v", err)
 		}
@@ -115,7 +115,7 @@ func TestCronNotificationsSendTelegramAndSignedFeishuSummaries(t *testing.T) {
 	t.Setenv("EASYCHECK_TG_CHAT_ID", "-100123")
 	t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", "https://open.feishu.cn/open-apis/bot/v2/hook/fixture-hook")
 	t.Setenv("EASYCHECK_FEISHU_SECRET", "fixture-feishu-secret")
-	notifier, err := cronNotifierFromEnv()
+	notifier, err := notifierFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,12 +148,12 @@ func TestCronNotificationsSendTelegramAndSignedFeishuSummaries(t *testing.T) {
 				t.Error("wrong Feishu request or HMAC signature")
 			}
 		}
-		for _, want := range []string{"成功 2 项，失败 1 项", "早签到 <测试>", "晚签到 😀", "pcid=first", at.Format(time.RFC3339)} {
+		for _, want := range []string{"成功 2 项，失败 1 项", "早签到 <测试>", "晚签到 😀", "pcid=first", "失败任务（pcid=failed-batch）", at.Format(time.RFC3339)} {
 			if !strings.Contains(text, want) {
 				t.Errorf("notification is missing %s", want)
 			}
 		}
-		for _, forbidden := range []string{"do-not-forward", "failed-batch", "fixture-token", "fixture-feishu-secret"} {
+		for _, forbidden := range []string{"do-not-forward", "fixture-token", "fixture-feishu-secret"} {
 			if strings.Contains(text, forbidden) {
 				t.Errorf("notification leaked %s", forbidden)
 			}
@@ -165,7 +165,7 @@ func TestCronNotificationsSendTelegramAndSignedFeishuSummaries(t *testing.T) {
 	})
 	var output, diagnostics bytes.Buffer
 	a := &app{output: &output, diagnostics: &diagnostics}
-	a.notifyCronSuccess(context.Background(), notifier, successNotificationFixture(), at)
+	a.notifyCronResult(context.Background(), notifier, successNotificationFixture(), nil, at)
 	if calls != 2 || output.Len() != 0 || !strings.Contains(diagnostics.String(), "Telegram 通知已发送") || !strings.Contains(diagnostics.String(), "飞书 通知已发送") {
 		t.Fatalf("did not send both channels or polluted stdout: calls=%d diagnostics=%s", calls, &diagnostics)
 	}
@@ -192,7 +192,7 @@ func TestCronNotificationResponsesAndFailures(t *testing.T) {
 		{"oversized body", feishuChannel, strings.Repeat("x", (64<<10)+1), 200, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			n := &cronNotifier{client: &http.Client{Transport: notificationTransport(func(r *http.Request) (*http.Response, error) {
+			n := &resultNotifier{client: &http.Client{Transport: notificationTransport(func(r *http.Request) (*http.Response, error) {
 				var payload map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 					t.Error(err)
@@ -212,7 +212,7 @@ func TestCronNotificationResponsesAndFailures(t *testing.T) {
 
 func TestCronNotificationFailureDoesNotBlockOtherChannel(t *testing.T) {
 	var calls int
-	n := &cronNotifier{
+	n := &resultNotifier{
 		channels: []notificationChannel{
 			{name: telegramChannel, endpoint: "https://example.invalid/fixture-secret"},
 			{name: feishuChannel, endpoint: "https://example.invalid/fixture-secret"},
@@ -227,35 +227,110 @@ func TestCronNotificationFailureDoesNotBlockOtherChannel(t *testing.T) {
 	}
 	var diagnostics bytes.Buffer
 	a := &app{diagnostics: &diagnostics}
-	a.notifyCronSuccess(context.Background(), n, successNotificationFixture(), time.Now())
+	a.notifyCronResult(context.Background(), n, successNotificationFixture(), nil, time.Now())
 	if calls != 2 || !strings.Contains(diagnostics.String(), "Telegram 通知失败") || !strings.Contains(diagnostics.String(), "飞书 通知已发送") || strings.Contains(diagnostics.String(), "fixture-secret") {
 		t.Fatalf("notification failure blocked other channel or leaked secret: %s", &diagnostics)
 	}
 }
 
-func TestCronNotificationIgnoresEmptyFailedSkippedAndCanceledRounds(t *testing.T) {
+func TestCronFailureNotificationAndEmptySkippedRounds(t *testing.T) {
 	var calls int
-	n := &cronNotifier{channels: []notificationChannel{{name: feishuChannel, endpoint: "https://example.invalid/"}}, client: &http.Client{Transport: notificationTransport(func(r *http.Request) (*http.Response, error) {
+	n := &resultNotifier{channels: []notificationChannel{{name: feishuChannel, endpoint: "https://example.invalid/"}}, client: &http.Client{Transport: notificationTransport(func(r *http.Request) (*http.Response, error) {
 		calls++
 		return notificationHTTPResponse(r, 200, `{"code":0}`), nil
 	})}}
 	a := &app{diagnostics: io.Discard}
-	for _, report := range []automaticSignReport{{}, {Failed: 1}, {Skipped: 2}} {
-		a.notifyCronSuccess(context.Background(), n, report, time.Now())
+	for _, report := range []automaticSignReport{{}, {Skipped: 2}} {
+		a.notifyCronResult(context.Background(), n, report, nil, time.Now())
 	}
+	a.notifyCronResult(context.Background(), n, automaticSignReport{Failed: 1}, nil, time.Now())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	a.notifyCronSuccess(ctx, n, successNotificationFixture(), time.Now())
-	a.notifyCronSuccess(context.Background(), nil, successNotificationFixture(), time.Now())
-	if calls != 0 {
-		t.Fatalf("sent %d notifications without a successful active cron round", calls)
+	a.notifyCronResult(ctx, n, successNotificationFixture(), nil, time.Now())
+	a.notifyCronResult(context.Background(), nil, successNotificationFixture(), nil, time.Now())
+	if calls != 1 {
+		t.Fatalf("failed round was not reported or an empty round was notified: calls=%d", calls)
+	}
+}
+
+func TestCronFailureSummaryContainsSafeFailureDetails(t *testing.T) {
+	report := automaticSignReport{Matched: 1, Failed: 1, Results: []automaticSignResult{{BatchID: "batch", Name: "签到任务", Status: "failed", Error: "private server response"}}}
+	message := cronResultMessage(report, errors.New("private URL and server body"), time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC))
+	for _, want := range []string{"定时签到失败", "失败 1 项", "签到任务（pcid=batch）", "执行异常"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("failure notification is missing %q: %s", want, message)
+		}
+	}
+	for _, secret := range []string{"private server response", "private URL and server body"} {
+		if strings.Contains(message, secret) {
+			t.Errorf("failure notification leaked raw error %q", secret)
+		}
+	}
+}
+
+func TestCronNotifiesWhenEverySignAttemptFails(t *testing.T) {
+	clearNotificationEnv(t)
+	var notifications, submissions atomic.Int32
+	var message string
+	notificationServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Content struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		message = payload.Content.Text
+		notifications.Add(1)
+		fmt.Fprint(w, `{"code":0}`)
+	}))
+	defer notificationServer.Close()
+	base, session := taskCLIFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/queryQdrw") {
+			var query struct {
+				BatchID    string          `json:"pcid"`
+				Pagination json.RawMessage `json:"pagination"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&query); err != nil {
+				t.Error(err)
+			}
+			batch := "all-failed"
+			if query.Pagination == nil {
+				batch = query.BatchID
+			}
+			writeTaskPage(t, w, []qdgj.Task{activeTaskFixture(batch)}, 1, 1)
+			return
+		}
+		submissions.Add(1)
+		fmt.Fprint(w, `{"code":409,"meta":{"message":"fixture denied"}}`)
+	})
+	t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", notificationServer.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	var output, diagnostics bytes.Buffer
+	diagnosticWriter := callbackWriter(func(p []byte) {
+		diagnostics.Write(p)
+		if bytes.Contains(p, []byte("飞书 通知已发送")) {
+			cancel()
+		}
+	})
+	args := append(automaticSignArgs(base, session), "--cron", "@every 1s")
+	err := Run(ctx, args, strings.NewReader(""), &output, diagnosticWriter)
+	if !errors.Is(err, context.Canceled) || submissions.Load() != 1 || notifications.Load() != 1 {
+		t.Fatalf("all-failed cron round was not notified once: submissions=%d notifications=%d err=%v", submissions.Load(), notifications.Load(), err)
+	}
+	for _, want := range []string{"EasyCheck 定时签到失败", "失败 1 项", "fixture all-failed（pcid=all-failed）"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("all-failed notification missing %q: %s", want, message)
+		}
 	}
 }
 
 func TestCronSuccessMessageTruncatesUnicode(t *testing.T) {
 	report := successNotificationFixture()
 	report.Results[0].Name = strings.Repeat("😀签到", 3000)
-	text := cronSuccessMessage(report, time.Now())
+	text := cronResultMessage(report, nil, time.Now())
 	if !utf8.ValidString(text) || len([]rune(text)) != 2000 || !strings.HasSuffix(text, "…（内容过长，已截断）") || !strings.Contains(text, "成功 2 项，失败 1 项") {
 		t.Fatal("notification text limit or Unicode truncation failed")
 	}
@@ -270,7 +345,7 @@ func TestCronNotificationTimeoutAndCancellation(t *testing.T) {
 	clearNotificationEnv(t)
 	t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", server.URL)
 	t.Setenv("EASYCHECK_NOTIFY_TIMEOUT", "30ms")
-	n, err := cronNotifierFromEnv()
+	n, err := notifierFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +377,7 @@ func TestCronNotificationDoesNotFollowRedirects(t *testing.T) {
 	defer server.Close()
 	clearNotificationEnv(t)
 	t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", server.URL)
-	n, err := cronNotifierFromEnv()
+	n, err := notifierFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +386,7 @@ func TestCronNotificationDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
-func TestCronNotifiesOnlyActualSuccessAndKeepsSigningAfterNotificationFailure(t *testing.T) {
+func TestCronNotifiesPartialSuccessAndKeepsSigningAfterNotificationFailure(t *testing.T) {
 	clearNotificationEnv(t)
 	var notifications, submissions atomic.Int32
 	notificationsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

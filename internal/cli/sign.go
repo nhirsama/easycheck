@@ -15,7 +15,7 @@ var signSpec = commandSpec{
 	name:        "sign",
 	summary:     "自动签到当前任务，支持 cron 周期调度",
 	syntax:      "[--pcid ID] [--cron EXPR] [选项]",
-	description: "默认立即查询任务列表，为当前签到窗口内未签到的定位任务逐个签到。\n--cron 使用五段表达式常驻调度，每次触发后重新读取会话和任务列表，无需提前知道批次 ID。\n可选 --pcid 只处理指定批次；不带 --cron 时手动立即提交该批次。\n默认在允许地点半径的 90% 内生成坐标，通过原站地图服务自动解析位置名称。\n自定义定位时同时提供 --longitude、--latitude，--address 可选。\ncron 运行时跳过重叠触发，Ctrl+C 可停止。\ncron 成功签到后可按 EASYCHECK_TG_BOT_TOKEN/EASYCHECK_TG_CHAT_ID 或 EASYCHECK_FEISHU_WEBHOOK_URL 发送通知。",
+	description: "默认立即查询任务列表，为当前签到窗口内未签到的定位任务逐个签到。\n--cron 使用五段表达式常驻调度，每次触发后重新读取会话和任务列表，无需提前知道批次 ID。\n可选 --pcid 只处理指定批次；不带 --cron 时手动立即提交该批次。\n默认在允许地点半径的 90% 内生成坐标，通过原站地图服务自动解析位置名称。\n自定义定位时同时提供 --longitude、--latitude，--address 可选。\ncron 运行时跳过重叠触发，Ctrl+C 可停止。\ncron 签到成功或失败时可按 EASYCHECK_TG_BOT_TOKEN/EASYCHECK_TG_CHAT_ID 或 EASYCHECK_FEISHU_WEBHOOK_URL 发送通知。",
 	examples: []string{
 		"easycheck sign",
 		"easycheck sign --pcid '<batch-id>'",
@@ -34,7 +34,7 @@ func (a *app) configureSign(c *command) {
 	var photoID string
 	var scheduling cronOptions
 	var plan *cronPlan
-	var notifier *cronNotifier
+	var notifier *resultNotifier
 	task.bind(c.flags)
 	c.flags.Lookup("pcid").Usage = "可选批次 `ID`；省略时自动发现当前任务"
 	response.bind(c.flags)
@@ -52,7 +52,7 @@ func (a *app) configureSign(c *command) {
 			return err
 		}
 		if plan != nil {
-			notifier, err = cronNotifierFromEnv()
+			notifier, err = notifierFromEnv()
 			if err != nil {
 				return err
 			}
@@ -82,16 +82,22 @@ func (a *app) configureSign(c *command) {
 		}
 		client, err := c.sessionClient()
 		if err != nil {
+			if plan != nil {
+				a.notifyCronResult(ctx, notifier, automaticSignReport{}, err, time.Now().In(plan.location))
+			}
 			return err
 		}
 		if plan != nil {
 			return a.runCron(ctx, plan, func(ctx context.Context) error {
-				if err := client.LoadSession(); err != nil {
-					return fmt.Errorf("cron 加载最新会话：%w；请先执行 easycheck login", err)
+				var report automaticSignReport
+				err := client.LoadSession()
+				if err != nil {
+					err = fmt.Errorf("cron 加载最新会话：%w；请先执行 easycheck login", err)
+				} else {
+					report, err = a.signCurrentTasks(ctx, client, request, response)
 				}
-				report, err := a.signCurrentTasks(ctx, client, request, response)
 				// 通知失败不改变签到结果，也不重试已成功的签到。
-				a.notifyCronSuccess(ctx, notifier, report, time.Now().In(plan.location))
+				a.notifyCronResult(ctx, notifier, report, err, time.Now().In(plan.location))
 				return err
 			})
 		}

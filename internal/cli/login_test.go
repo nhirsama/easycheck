@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"easycheck/qdgj"
 )
@@ -26,6 +28,7 @@ import (
 const fixtureLoginPublicKey = "MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAM0lIa8taIYX0beck8CCKoublJ0oiSsPPtcPdtjuhRK4lVduwmqL0hlRiyBgAiF5K9VRmUagZGgBCoCZ6BdvVB0CAwEAAQ=="
 
 func TestLoginConfigurationPriority(t *testing.T) {
+	clearNotificationEnv(t)
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +125,7 @@ func TestLoginConfigurationPriority(t *testing.T) {
 }
 
 func TestLoginRejectsEmptyOverridesAndPasswordConflict(t *testing.T) {
+	clearNotificationEnv(t)
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
 	defer server.Close()
@@ -193,6 +197,7 @@ func TestHelpHidesEnvironmentConfig(t *testing.T) {
 }
 
 func TestLoginFlow(t *testing.T) {
+	clearNotificationEnv(t)
 	t.Setenv("GODEBUG", "rsa1024min=1")
 	for _, captcha := range []bool{false, true} {
 		t.Run(fmt.Sprintf("captcha=%t", captcha), func(t *testing.T) {
@@ -242,6 +247,7 @@ func TestLoginFlow(t *testing.T) {
 }
 
 func TestLoginFailures(t *testing.T) {
+	clearNotificationEnv(t)
 	t.Setenv("GODEBUG", "rsa1024min=1")
 	t.Setenv("EASYCHECK_USERNAME", "test001")
 	t.Setenv("EASYCHECK_PASSWORD", "Probe-Only-2026")
@@ -251,12 +257,154 @@ func TestLoginFailures(t *testing.T) {
 			server := loginFixture(t, false, status[0], status[1], &posts)
 			defer server.Close()
 			path := filepath.Join(t.TempDir(), "session.json")
-			err := run([]string{"-base-url", server.URL + "/qdgj/", "-session", path}, strings.NewReader(""), io.Discard, io.Discard)
+			err := run([]string{"-base-url", server.URL + "/qdgj/", "-session", path, "--retries", "0"}, strings.NewReader(""), io.Discard, io.Discard)
 			if err == nil || posts.Load() != 1 {
 				t.Fatalf("expected failure and one request: err=%v posts=%d", err, posts.Load())
 			}
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatal("failed login should not write a session")
+			}
+		})
+	}
+}
+
+func TestLoginRetriesAfterConfiguredDelayAndSavesSession(t *testing.T) {
+	clearNotificationEnv(t)
+	t.Setenv("GODEBUG", "rsa1024min=1")
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/qdgj/":
+			fmt.Fprintf(w, `<script>encryptor.setPublicKey("%s")</script>`, fixtureLoginPublicKey)
+		case "/qdgj/ng/captcha/status":
+			fmt.Fprint(w, `{"meta":{"statusCode":200},"data":false}`)
+		case "/qdgj/login":
+			if attempts.Add(1) == 1 {
+				fmt.Fprint(w, `{"meta":{"statusCode":401,"message":"fixture failure"},"data":{}}`)
+				return
+			}
+			fmt.Fprint(w, `{"meta":{"statusCode":200},"data":{"userId":"fixture-user","tokenId":"fixture-token"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("EASYCHECK_USERNAME", "fixture-user")
+	t.Setenv("EASYCHECK_PASSWORD", "fixture-password")
+	path := filepath.Join(t.TempDir(), "session.json")
+	var output, diagnostics bytes.Buffer
+	started := time.Now()
+	err := run([]string{"login", "--base-url", server.URL + "/qdgj/", "--session", path, "--retries", "1", "--retry-interval", "20ms"}, strings.NewReader(""), &output, &diagnostics)
+	if err != nil || attempts.Load() != 2 || time.Since(started) < 20*time.Millisecond {
+		t.Fatalf("login retry did not wait and recover: attempts=%d elapsed=%s err=%v", attempts.Load(), time.Since(started), err)
+	}
+	if _, err := os.Stat(path); err != nil || !strings.Contains(output.String(), "登录成功") || !strings.Contains(diagnostics.String(), "将在 20ms 后重试") {
+		t.Fatalf("retry did not save session or report delay: output=%s diagnostics=%s err=%v", output.String(), diagnostics.String(), err)
+	}
+}
+
+func TestLoginRetriesAreCancelableAndValidated(t *testing.T) {
+	clearNotificationEnv(t)
+	t.Setenv("EASYCHECK_BASE_URL", "https://example.invalid/qdgj/")
+	t.Setenv("EASYCHECK_USERNAME", "fixture-user")
+	t.Setenv("EASYCHECK_PASSWORD", "fixture-password")
+	for _, args := range [][]string{{"--retries", "-1"}, {"--retry-interval", "0s"}, {"--retry-interval", "invalid"}} {
+		err := run(append([]string{"login"}, args...), strings.NewReader(""), io.Discard, io.Discard)
+		var usage *usageError
+		if !errors.As(err, &usage) {
+			t.Errorf("invalid retry option accepted: %v (%v)", args, err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/qdgj/":
+			fmt.Fprintf(w, `<script>encryptor.setPublicKey("%s")</script>`, fixtureLoginPublicKey)
+		case "/qdgj/ng/captcha/status":
+			fmt.Fprint(w, `{"meta":{"statusCode":200},"data":false}`)
+		case "/qdgj/login":
+			attempts.Add(1)
+			fmt.Fprint(w, `{"meta":{"statusCode":401},"data":{}}`)
+		}
+	}))
+	defer server.Close()
+	diagnostics := callbackWriter(func(p []byte) {
+		if bytes.Contains(p, []byte("后重试")) {
+			cancel()
+		}
+	})
+	err := Run(ctx, []string{"login", "--base-url", server.URL + "/qdgj/", "--username", "fixture-user", "--password", "fixture-password", "--retries", "5", "--retry-interval", "1h"}, strings.NewReader(""), io.Discard, diagnostics)
+	if !errors.Is(err, context.Canceled) || attempts.Load() != 1 {
+		t.Fatalf("login retry wait ignored cancellation: attempts=%d err=%v", attempts.Load(), err)
+	}
+}
+
+func TestLoginFailuresNotifyEveryAttemptAndRespectRetryLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		retries             string
+		attempts            int
+		notificationFailure bool
+	}{
+		{name: "no retries", retries: "0", attempts: 1},
+		{name: "default retries", attempts: 4},
+		{name: "notification failure does not stop retries", retries: "2", attempts: 3, notificationFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearNotificationEnv(t)
+			t.Setenv("EASYCHECK_LOGIN_RETRIES", "")
+			t.Setenv("GODEBUG", "rsa1024min=1")
+			t.Setenv("EASYCHECK_USERNAME", "test001")
+			t.Setenv("EASYCHECK_PASSWORD", "Probe-Only-2026")
+			var posts atomic.Int32
+			loginServer := loginFixture(t, false, 200, 401, &posts)
+			defer loginServer.Close()
+			messages := make(chan string, tc.attempts+1)
+			notifications := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload struct {
+					Content struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				messages <- payload.Content.Text
+				if tc.notificationFailure {
+					fmt.Fprint(w, `{"code":19021,"msg":"fixture-secret"}`)
+				} else {
+					fmt.Fprint(w, `{"code":0}`)
+				}
+			}))
+			defer notifications.Close()
+			t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", notifications.URL)
+			path := filepath.Join(t.TempDir(), "session.json")
+			args := []string{"login", "--base-url", loginServer.URL + "/qdgj/", "--session", path, "--retry-interval", "1ms"}
+			if tc.retries != "" {
+				args = append(args, "--retries", tc.retries)
+			}
+			var diagnostics bytes.Buffer
+			err := run(args, strings.NewReader(""), io.Discard, &diagnostics)
+			var apiErr *qdgj.APIError
+			if !errors.As(err, &apiErr) || apiErr.StatusCode != 401 || int(posts.Load()) != tc.attempts || len(messages) != tc.attempts {
+				t.Fatalf("wrong attempts or notifications: posts=%d messages=%d err=%v", posts.Load(), len(messages), err)
+			}
+			for attempt := 1; attempt <= tc.attempts; attempt++ {
+				message := <-messages
+				if !strings.Contains(message, "EasyCheck 登录失败") || !strings.Contains(message, fmt.Sprintf("第 %d 次尝试失败", attempt)) || strings.Contains(message, "fixture") || strings.Contains(message, "Probe-Only-2026") {
+					t.Fatalf("incorrect or unsafe notification: %q", message)
+				}
+				if attempt < tc.attempts && !strings.Contains(message, "将在 1ms 后重试") || attempt == tc.attempts && !strings.Contains(message, "重试次数已用尽") {
+					t.Errorf("notification does not describe next action: %q", message)
+				}
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatal("failed login saved a session")
+			}
+			if strings.Contains(diagnostics.String(), "fixture-secret") || tc.notificationFailure && !strings.Contains(diagnostics.String(), "飞书 通知失败") {
+				t.Fatalf("notification failure was not isolated: %s", diagnostics.String())
 			}
 		})
 	}

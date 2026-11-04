@@ -72,6 +72,8 @@ set +a
 | `--password PASSWORD` | 覆盖 `EASYCHECK_PASSWORD` 中的密码 |
 | `--password-stdin` | 从标准输入第一行读取密码，覆盖环境中的密码 |
 | `--captcha-file FILE` | 保存验证码图片，默认 `captcha.png` |
+| `--retries COUNT` | 登录失败后的重试次数，默认 `3`（首次尝试之外最多再试三次）；`0` 关闭重试；也可设 `EASYCHECK_LOGIN_RETRIES` |
+| `--retry-interval DURATION` | 两次登录尝试之间的等待时间，默认 `1m`；也可设 `EASYCHECK_LOGIN_RETRY_INTERVAL` |
 
 `--password` 与 `--password-stdin` 择一使用。以 zsh 隐藏输入密码，再登录：
 
@@ -86,6 +88,8 @@ unset EASYCHECK_PASSWORD
 验证码开启时，CLI 保存图片并在标准错误中提示输入，随后从标准输入读取验证码。密码和验证码共用标准输入时，密码占第一行，验证码占第二行。
 
 会话文件保存令牌、Cookie 和登录响应，恢复时要求当前基础 URL 与保存时一致。会话过期后执行 `login` 更新会话。
+
+登录失败会先发送已配置的 Telegram / 飞书通知，再等待指定间隔重试；重试等待响应 `Ctrl+C` / `SIGTERM`。最终失败会返回非零退出码，不保存会话。登录命令读取并校验通知渠道配置；未配置渠道时不会发送通知。
 
 ## 列表与详情
 
@@ -184,9 +188,9 @@ unset EASYCHECK_PASSWORD
 
 需保持进程或容器运行。`Ctrl+C`、`SIGTERM` 停止调度并取消当前请求，等待正在运行的一轮收尾。程序退出后不保留后台任务，不会补跑停机期间的计划。二维码签到不自动处理，照片要求仍须提供已上传的 `--photo-id`。
 
-### 成功通知
+### 结果通知
 
-仅 `sign --cron ...` 使用以下环境变量，默认不发送通知；Telegram 和飞书可单独启用，也可同时启用：
+登录和 `sign --cron ...` 使用以下通知渠道配置，默认不发送通知；Telegram 和飞书可单独启用，也可同时启用：
 
 | 环境变量 | 用途 |
 | --- | --- |
@@ -208,11 +212,11 @@ EASYCHECK_NOTIFY_TIMEOUT=10s
 
 Telegram 通过 BotFather 创建机器人并取得 Token，目标会话需允许机器人发言；首次私聊先向机器人发送 `/start`。飞书使用群自定义机器人 Webhook；启用签名校验时填写对应密钥，程序自动生成时间戳与 HMAC-SHA256 签名。若飞书启用了关键词校验，可将 `EasyCheck` 设为允许关键词。
 
-本机运行须先将配置导出到环境（见本文公共选项中的 `.env` 导出方式），再执行 `./easycheck sign --cron '*/5 * * * *'`；Compose 自动传入这些配置，修改 `.env` 后运行 `docker compose up -d` 生效。配置在 cron 启动时读取并校验，填写不完整或超时无效会在调度开始前返回错误；非 cron 命令不读取通知配置。
+本机运行须先将配置导出到环境（见本文公共选项中的 `.env` 导出方式），再执行 `./easycheck sign --cron '*/5 * * * *'`；Compose 自动传入这些配置，修改 `.env` 后运行 `docker compose up -d` 生效。配置在登录或 cron 启动时读取并校验，填写不完整或超时无效会返回错误；其他非 cron 命令不读取通知配置。
 
-每轮存在至少一项**实际签到成功**时，每个已配置渠道发送一次汇总，包含执行时间（带时区）、成功任务名称、批次 ID 和成功/失败/跳过数量；消息过长时截断。部分成功仍通知；没有任务、只有跳过或全部失败时不发送。不带 `--cron` 的立即签到不发送。通知不包含原始接口响应、坐标、站点 Cookie 或登录令牌。
+每次登录尝试失败时，每个已配置渠道发送通知，包含时间、尝试次数和下一步重试计划；登录最终成功不额外通知。每轮 cron 在存在实际签到成功或失败时各发送一次汇总，包含执行时间（带时区）、任务名称、批次 ID 和成功/失败/跳过数量；部分成功仍通知，全部失败也会通知，消息过长时截断。没有任务、只有跳过时不通知。不带 `--cron` 的立即签到不发送。通知不包含原始接口响应、坐标、站点 Cookie 或登录令牌。
 
-通知使用独立 HTTP 客户端，不跟随重定向；HTTP 成功后还会检查渠道业务状态码。任一渠道失败只记录到标准错误，仍尝试其他渠道，不改变签到结果、不自动重试通知或签到，后续 cron 正常执行。日志不打印 Token、签名密钥、Webhook 地址或通知接口响应正文，标准输出/`--json` 格式保持不变。停止进程时会取消正在发送的通知，不保留待发队列。
+通知使用独立 HTTP 客户端，不跟随重定向；HTTP 成功后还会检查渠道业务状态码。任一渠道失败只记录到标准错误，仍尝试其他渠道，不改变登录/签到结果、不自动重试通知或签到，后续登录重试或 cron 调度继续。通知错误摘要不转发站点原始错误消息；日志不打印 Token、签名密钥、Webhook 地址或通知接口响应正文，标准输出/`--json` 格式保持不变。停止进程时会取消正在发送的通知及登录重试等待，不保留待发队列。
 
 ### Docker Compose
 
@@ -237,7 +241,7 @@ EASYCHECK_TIMEZONE=Asia/Shanghai
 
 上述两个变量由 Compose 转为 `sign --cron ... --timezone ...` 参数，本机 CLI 仍使用命令行选项。密码建议用单引号包裹，避免 `.env` 中的 `$` 被当作变量插值。
 
-默认运行 `ghcr.io/nhirsama/easycheck:latest`；需要运行当前源码时使用 `docker compose up -d --build`。每次启动依次执行 `login` 和 `sign --cron ...`，登录失败不启动调度；不会在启动时立即签到。容器内会话路径固定为 `/data/session.json`，不挂载卷，不需要持久化会话或提前运行登录命令，删除或重建容器后会话丢弃。
+默认运行 `ghcr.io/nhirsama/easycheck:latest`；需要运行当前源码时使用 `docker compose up -d --build`。每次启动先执行 `login`：失败后默认间隔 1 分钟重试 3 次（`EASYCHECK_LOGIN_RETRIES`、`EASYCHECK_LOGIN_RETRY_INTERVAL` 可改），全部失败后才退出且不启动调度；配置通知渠道时每次失败都会发通知。登录成功后进入 `sign --cron ...`，启动时不会立即签到。容器内会话路径固定为 `/data/session.json`，不挂载卷，不需要持久化会话或提前运行登录命令，删除或重建容器后会话丢弃。
 
 通过 `docker compose logs -f` 查看计划和执行结果。修改 `.env` 后运行 `docker compose up -d` 更新容器；会话过期时运行 `docker compose restart` 重新登录。`docker compose down` 停止调度并移除容器。
 

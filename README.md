@@ -55,9 +55,9 @@ go run . sign --cron '*/5 * * * *'
 
 每次触发重新读取会话、翻页查询列表，为当前窗口内未签到的定位任务逐个复查并签到，无需提前知道 `pcid`。跳过已签到、未开始、已结束和二维码任务；前一轮未完成时跳过重叠触发，本轮失败不终止调度。直接运行 `go run . sign` 则立即执行一轮后退出。详见 [CLI 使用说明](docs/CLI.md#定时签到)。
 
-### 成功通知
+### 结果通知
 
-cron 模式支持 Telegram 和飞书，可单独启用或同时启用。在 `.env` 中填写需要的渠道，未填写的渠道关闭：
+登录和 cron 模式支持 Telegram 和飞书，可单独启用或同时启用。在 `.env` 中填写需要的渠道，未填写的渠道关闭：
 
 ```dotenv
 EASYCHECK_TG_BOT_TOKEN='your-bot-token'
@@ -68,9 +68,9 @@ EASYCHECK_FEISHU_SECRET=''
 EASYCHECK_NOTIFY_TIMEOUT=10s
 ```
 
-每轮实际成功签到至少一项后，各渠道发送一次汇总（时间、成功任务名称和批次 ID、成功/失败/跳过数量）；没有成功项不通知，部分成功仍通知。通知失败只记录日志，不中断后续调度，不重试签到。不带 `--cron` 的手动签到不发通知。
+登录失败后默认间隔 1 分钟重试，最多重试 3 次（首次尝试之外）；可通过 `EASYCHECK_LOGIN_RETRIES` 和 `EASYCHECK_LOGIN_RETRY_INTERVAL` 修改，设重试次数为 `0` 可关闭。配置渠道后每次登录失败都会通知。cron 每轮有签到成功或失败时，各渠道发送一次结果汇总；全部失败或部分成功都会通知，没有任务或仅跳过时不通知。通知失败只记录日志，不中断后续重试或调度，不重试签到。不带 `--cron` 的手动签到不发通知。
 
-Compose 会传入这些变量；本机 CLI 需先导出到环境中。飞书签名等渠道配置见 [通知说明](docs/CLI.md#成功通知)。
+Compose 会传入这些变量；本机 CLI 需先导出到环境中。飞书签名等渠道配置见 [通知说明](docs/CLI.md#结果通知)。
 
 ## Docker
 
@@ -85,7 +85,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-`compose.yaml` 默认使用 GHCR 的 `latest` 镜像，也可以通过 `docker compose up -d --build` 从本地源码构建。容器每次启动先登录，成功后进入内置 cron 调度，自动查找当前窗口内的任务，无需填写 `pcid`。登录失败时不启动调度。
+`compose.yaml` 默认使用 GHCR 的 `latest` 镜像，也可以通过 `docker compose up -d --build` 从本地源码构建。容器每次启动先登录，失败后默认每隔 1 分钟重试 3 次；全部失败才退出，不启动调度。登录成功后进入内置 cron 调度，自动查找当前窗口内的任务，无需填写 `pcid`。
 
 Compose 自动读取 `.env`；`EASYCHECK_CRON` 默认是 `'*/5 * * * *'`（每 5 分钟），`EASYCHECK_TIMEZONE` 默认是 `Asia/Shanghai`。例如每天北京时间 08:00，设置 `EASYCHECK_CRON='0 8 * * *'`。修改配置后再次运行 `docker compose up -d` 应用。
 

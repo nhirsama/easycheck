@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"easycheck/qdgj"
 )
 
 const (
@@ -30,13 +32,13 @@ type notificationChannel struct {
 	secret   string
 }
 
-type cronNotifier struct {
+type resultNotifier struct {
 	client   *http.Client
 	channels []notificationChannel
 }
 
-// cronNotifierFromEnv 只在 cron 模式下读取；没有配置渠道时不创建 HTTP 客户端。
-func cronNotifierFromEnv() (*cronNotifier, error) {
+// notifierFromEnv 在 login 和 cron 模式下读取；没有配置渠道时不创建 HTTP 客户端。
+func notifierFromEnv() (*resultNotifier, error) {
 	token := strings.TrimSpace(os.Getenv("EASYCHECK_TG_BOT_TOKEN"))
 	chatID := strings.TrimSpace(os.Getenv("EASYCHECK_TG_CHAT_ID"))
 	webhook := strings.TrimSpace(os.Getenv("EASYCHECK_FEISHU_WEBHOOK_URL"))
@@ -74,7 +76,7 @@ func cronNotifierFromEnv() (*cronNotifier, error) {
 			return nil, errors.New("EASYCHECK_NOTIFY_TIMEOUT 须为大于零的时长，例如 10s")
 		}
 	}
-	return &cronNotifier{
+	return &resultNotifier{
 		channels: channels,
 		// 独立于站点客户端，不携带站点令牌和 Cookie，也不跟随重定向。
 		client: &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -83,18 +85,34 @@ func cronNotifierFromEnv() (*cronNotifier, error) {
 	}, nil
 }
 
-func (a *app) notifyCronSuccess(ctx context.Context, notifier *cronNotifier, report automaticSignReport, at time.Time) {
-	if notifier == nil || report.Succeeded == 0 || ctx.Err() != nil {
+func (a *app) notifyCronResult(ctx context.Context, notifier *resultNotifier, report automaticSignReport, runErr error, at time.Time) {
+	if report.Succeeded == 0 && report.Failed == 0 && runErr == nil {
 		return
 	}
-	message := cronSuccessMessage(report, at)
+	a.sendNotification(ctx, notifier, cronResultMessage(report, runErr, at), at)
+}
+
+func (a *app) notifyLoginFailure(ctx context.Context, notifier *resultNotifier, err error, attempt, remaining int, interval time.Duration, at time.Time) {
+	message := fmt.Sprintf("EasyCheck 登录失败\n时间：%s\n第 %d 次尝试失败\n原因：%s\n", at.Format(time.RFC3339), attempt, notificationErrorSummary(err))
+	if remaining > 0 {
+		message += fmt.Sprintf("将在 %s 后重试，剩余 %d 次重试。", interval, remaining)
+	} else {
+		message += "重试次数已用尽，不再重试；请检查配置或站点状态。"
+	}
+	a.sendNotification(ctx, notifier, message, at)
+}
+
+func (a *app) sendNotification(ctx context.Context, notifier *resultNotifier, message string, at time.Time) {
+	if notifier == nil || ctx.Err() != nil {
+		return
+	}
 	for _, channel := range notifier.channels {
 		if ctx.Err() != nil {
 			return
 		}
 		if err := notifier.send(ctx, channel, message, at); err != nil {
 			if ctx.Err() == nil {
-				fmt.Fprintf(a.diagnostics, "%s 通知失败：%v；签到结果不受影响，继续后续 cron 调度。\n", channel.name, err)
+				fmt.Fprintf(a.diagnostics, "%s 通知失败：%v；执行结果不受影响。\n", channel.name, err)
 			}
 		} else {
 			fmt.Fprintf(a.diagnostics, "%s 通知已发送。\n", channel.name)
@@ -102,12 +120,25 @@ func (a *app) notifyCronSuccess(ctx context.Context, notifier *cronNotifier, rep
 	}
 }
 
-func cronSuccessMessage(report automaticSignReport, at time.Time) string {
+func cronResultMessage(report automaticSignReport, runErr error, at time.Time) string {
 	var text strings.Builder
-	fmt.Fprintf(&text, "EasyCheck 定时签到成功\n时间：%s\n成功 %d 项，失败 %d 项，跳过 %d 项\n", at.Format(time.RFC3339), report.Succeeded, report.Failed, report.Skipped)
+	status := "成功"
+	if report.Failed > 0 || runErr != nil {
+		status = "失败"
+		if report.Succeeded > 0 {
+			status = "部分失败"
+		}
+	}
+	fmt.Fprintf(&text, "EasyCheck 定时签到%s\n时间：%s\n成功 %d 项，失败 %d 项，跳过 %d 项\n", status, at.Format(time.RFC3339), report.Succeeded, report.Failed, report.Skipped)
+	if runErr != nil {
+		fmt.Fprintf(&text, "本轮执行异常：%s\n", notificationErrorSummary(runErr))
+	}
 	for _, result := range report.Results {
-		if result.Status == "success" {
-			fmt.Fprintf(&text, "- %s（pcid=%s）\n", result.Name, result.BatchID)
+		switch result.Status {
+		case "success":
+			fmt.Fprintf(&text, "- 成功：%s（pcid=%s）\n", result.Name, result.BatchID)
+		case "failed":
+			fmt.Fprintf(&text, "- 失败：%s（pcid=%s），详细原因请查看日志\n", result.Name, result.BatchID)
 		}
 	}
 	// 同时控制 Telegram 字符数和飞书 JSON 请求体大小，不截断 UTF-8 字符。
@@ -120,7 +151,26 @@ func cronSuccessMessage(report automaticSignReport, at time.Time) string {
 	return text.String()
 }
 
-func (n *cronNotifier) send(ctx context.Context, channel notificationChannel, text string, at time.Time) error {
+// 不转发原始错误文本：服务端消息、网络 URL 和文件路径可能包含敏感信息。
+func notificationErrorSummary(err error) string {
+	var apiErr *qdgj.APIError
+	switch {
+	case errors.As(err, &apiErr):
+		return fmt.Sprintf("站点接口拒绝请求（HTTP=%d，code=%d，statusCode=%d）", apiErr.HTTPStatus, apiErr.Code, apiErr.StatusCode)
+	case errors.Is(err, context.DeadlineExceeded):
+		return "请求超时"
+	case errors.Is(err, qdgj.ErrLoginPublicKeyNotFound):
+		return "未找到登录 RSA 公钥"
+	case errors.Is(err, qdgj.ErrCaptchaRequired):
+		return "登录需要验证码"
+	case errors.Is(err, io.EOF):
+		return "标准输入已关闭，无法读取验证码"
+	default:
+		return "执行失败，详细原因请查看日志"
+	}
+}
+
+func (n *resultNotifier) send(ctx context.Context, channel notificationChannel, text string, at time.Time) error {
 	var payload map[string]any
 	switch channel.name {
 	case telegramChannel:
