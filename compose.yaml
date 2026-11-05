@@ -22,5 +22,4 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        easycheck login
         exec easycheck sign --cron "$${EASYCHECK_CRON}" --timezone "$${EASYCHECK_TIMEZONE}"

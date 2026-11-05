@@ -53,7 +53,7 @@ go run . sign --cron '*/5 * * * *'
 
 使用 `github.com/robfig/cron/v3` 在程序内调度，无需系统 crontab。表达式为五段：`分 时 日 月 星期`，默认时区 `Asia/Shanghai`，可用 `--timezone` 修改。程序持续运行，`Ctrl+C` 停止；已移除原来的 `--at`、`--after`。
 
-每次触发重新读取会话、翻页查询列表，为当前窗口内未签到的定位任务逐个复查并签到，无需提前知道 `pcid`。跳过已签到、未开始、已结束和二维码任务；前一轮未完成时跳过重叠触发，本轮失败不终止调度。直接运行 `go run . sign` 则立即执行一轮后退出。详见 [CLI 使用说明](docs/CLI.md#定时签到)。
+导出 `EASYCHECK_USERNAME` 和 `EASYCHECK_PASSWORD` 后，每次定时触发先重新登录、更新会话文件中的 Cookie 和令牌，再翻页查询列表，为当前窗口内未签到的定位任务逐个复查并签到，无需提前登录或知道 `pcid`。启动及空闲等待时不登录；未配置账号密码时，兼容每轮读取已有会话的方式。跳过已签到、未开始、已结束和二维码任务；前一轮未完成时跳过重叠触发，本轮失败不终止调度。直接运行 `go run . sign` 则使用已有会话立即执行一轮后退出。详见 [CLI 使用说明](docs/CLI.md#定时签到)。
 
 ### 结果通知
 
@@ -85,10 +85,10 @@ docker compose up -d
 docker compose logs -f
 ```
 
-`compose.yaml` 默认使用 GHCR 的 `latest` 镜像，也可以通过 `docker compose up -d --build` 从本地源码构建。容器每次启动先登录，失败后默认每隔 1 分钟重试 3 次；全部失败才退出，不启动调度。登录成功后进入内置 cron 调度，自动查找当前窗口内的任务，无需填写 `pcid`。
+`compose.yaml` 默认使用 GHCR 的 `latest` 镜像，也可以通过 `docker compose up -d --build` 从本地源码构建。容器启动后直接进入 cron 调度，每次触发先登录并保存新会话，再自动查找当前窗口内的任务，无需填写 `pcid`。登录失败后默认每隔 1 分钟重试 3 次；全部失败则跳过本轮，下次触发重新尝试。
 
 Compose 自动读取 `.env`；`EASYCHECK_CRON` 默认是 `'*/5 * * * *'`（每 5 分钟），`EASYCHECK_TIMEZONE` 默认是 `Asia/Shanghai`。例如每天北京时间 08:00，设置 `EASYCHECK_CRON='0 8 * * *'`。修改配置后再次运行 `docker compose up -d` 应用。
 
-**不挂载任何会话卷**：会话只写入容器内的 `/data/session.json`，删除或重建容器后丢弃，无需提前准备会话文件。会话失效时运行 `docker compose restart` 重新登录；停止并移除容器使用 `docker compose down`。
+**不挂载任何会话卷**：每轮登录将新会话写入容器内的 `/data/session.json`，删除或重建容器后丢弃，无需提前准备会话文件或因会话过期而重启。停止并移除容器使用 `docker compose down`。
 
-无人值守启动要求站点未开启登录验证码；开启时仍需交互输入，本配置不自动识别验证码。
+定时自动登录要求站点未开启登录验证码；开启时本轮登录失败并按配置重试，可通过手动 `login` 输入验证码后使用未配置账号密码的会话模式。

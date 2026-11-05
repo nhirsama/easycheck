@@ -87,7 +87,7 @@ unset EASYCHECK_PASSWORD
 
 验证码开启时，CLI 保存图片并在标准错误中提示输入，随后从标准输入读取验证码。密码和验证码共用标准输入时，密码占第一行，验证码占第二行。
 
-会话文件保存令牌、Cookie 和登录响应，恢复时要求当前基础 URL 与保存时一致。会话过期后执行 `login` 更新会话。
+会话文件保存令牌、Cookie 和登录响应，恢复时要求当前基础 URL 与保存时一致。手动命令的会话过期后执行 `login` 更新；cron 配置账号密码后每轮自动重新登录。
 
 登录失败会先发送已配置的 Telegram / 飞书通知，再等待指定间隔重试；重试等待响应 `Ctrl+C` / `SIGTERM`。最终失败会返回非零退出码，不保存会话。登录命令读取并校验通知渠道配置；未配置渠道时不会发送通知。
 
@@ -142,6 +142,8 @@ unset EASYCHECK_PASSWORD
 | `--remark TEXT` | 范围外签到备注，最多 100 个 UTF-16 字符 |
 | `--cron EXPR` | 常驻按五段 cron 表达式周期执行，例如 `'0 8 * * *'` |
 | `--timezone ZONE` | cron 的时区，默认 `Asia/Shanghai`（北京时间），须与 `--cron` 一起使用 |
+| `--retries COUNT` | cron 自动登录失败后的重试次数，默认 `3`，`0` 关闭；也可设 `EASYCHECK_LOGIN_RETRIES` |
+| `--retry-interval DURATION` | cron 自动登录重试间隔，默认 `1m`；也可设 `EASYCHECK_LOGIN_RETRY_INTERVAL` |
 
 范围外签到使用 `--outside-range --remark '<remark>'`，是否允许以服务端任务规则为准。定位生成、坐标校验、时间和照片要求均由客户端包及服务端处理。
 
@@ -175,14 +177,16 @@ unset EASYCHECK_PASSWORD
 
 表达式顺序为 `分 时 日 月 星期`，共五段，不包含秒字段；须加引号，避免 `*` 被 shell 展开。支持 cron 库的 `@daily`、`@hourly`、`@every 10m` 等简写，`@every` 间隔至少为 `1s`。时区统一通过 `--timezone` 指定，不使用表达式内的 `TZ=` / `CRON_TZ=`。程序内置时区数据，Docker 和 Windows 下不依赖主机默认时区。旧的 `--at`、`--after` 已移除。
 
-启动时先校验表达式和选项、读取本地会话，输出下次执行时间；不会启动后立即补签，空闲等待时不联网。每次 cron 触发后：
+本机需先导出 `EASYCHECK_BASE_URL`、`EASYCHECK_USERNAME` 和 `EASYCHECK_PASSWORD`，即可直接启动 cron，无需提前执行 `login`。账号密码须同时配置；均未配置时使用已有会话模式。
 
-1. 重新加载会话文件，自动翻页完整查询最新任务列表，再开始提交；同一 `pcid` 去重。
+启动时先校验表达式和选项，输出下次执行时间；自动登录模式无需本地会话，已有会话模式会校验本地会话文件。启动及空闲等待时不联网，不立即补签。每次 cron 触发后：
+
+1. 配置账号密码时，使用全新的 Cookie 会话登录，成功后以 `0600` 权限原子更新会话文件中的 Cookie 和令牌；失败按配置重试，最终失败则跳过本轮，下次触发重新尝试。登录或保存失败时不使用旧会话签到。未配置账号密码时，重新加载已有会话文件。随后自动翻页完整查询最新任务列表，再开始提交；同一 `pcid` 去重。
 2. 筛选 `status` 为“进行中”、`zt` 不是“已签到”、`qdfs` 为“定位签到”，且当前时间满足 `kssj <= 当前时间 < jssj` 的任务。原站不带时区的日期按北京时间解释，与定时器的 `--timezone` 无关。时间缺失或格式无效时报告错误，不猜测窗口。
 3. 多个符合条件的批次按列表顺序逐个处理；每项重新查询最新详情，再次核对窗口、方式与签到状态，随后生成定位、解析地址并提交一次。列表查询后已签到或已结束的任务跳过。
 4. 没有符合条件的任务时输出提示并等待下次触发。单个批次失败不立即重试，继续处理其余批次；本轮失败记录到标准错误，调度器继续运行。下一轮重新查询最新状态，已签到的不再提交。列表查询失败时不提交任何批次。
 
-每次触发重新加载会话，可在另一个终端执行 `login` 更新会话；会话失效时不使用旧令牌继续提交，不自动重新登录。前一轮仍在运行时跳过重叠触发，不并发签到或排队补执行。
+自动登录在每次触发后执行，避免等待期间 Cookie 或令牌过期；登录失败的重试次数和间隔与 `login` 命令一致。定时自动登录不交互读取验证码，站点开启验证码时本轮失败并按配置重试。未配置账号密码的已有会话模式仍可在另一个终端执行 `login` 更新会话，该模式不自动重新登录。前一轮仍在登录、重试或签到时跳过重叠触发，不并发签到或排队补执行。
 
 `--json` 在每轮结束后输出一个完整汇总 JSON 对象，包含 `matched`、`succeeded`、`skipped`、`failed` 和逐项 `results`；成功项保留服务端原始 `response`，失败项记录 `error`。常驻运行会依次输出多个 JSON 对象，可用流式 JSON 解析；`--out` 原子覆盖为最新一轮结果，权限为 `0600`。标准输出不混入调度日志。手动 `--pcid` 立即签到的原始响应格式保持不变。
 
@@ -220,7 +224,7 @@ Telegram 通过 BotFather 创建机器人并取得 Token，目标会话需允许
 
 ### Docker Compose
 
-仓库提供 `compose.yaml`，自动登录后在后台常驻运行 cron：
+仓库提供 `compose.yaml`，在后台常驻运行 cron，每次触发后自动登录：
 
 ```sh
 git clone https://github.com/nhirsama/easycheck.git
@@ -241,11 +245,11 @@ EASYCHECK_TIMEZONE=Asia/Shanghai
 
 上述两个变量由 Compose 转为 `sign --cron ... --timezone ...` 参数，本机 CLI 仍使用命令行选项。密码建议用单引号包裹，避免 `.env` 中的 `$` 被当作变量插值。
 
-默认运行 `ghcr.io/nhirsama/easycheck:latest`；需要运行当前源码时使用 `docker compose up -d --build`。每次启动先执行 `login`：失败后默认间隔 1 分钟重试 3 次（`EASYCHECK_LOGIN_RETRIES`、`EASYCHECK_LOGIN_RETRY_INTERVAL` 可改），全部失败后才退出且不启动调度；配置通知渠道时每次失败都会发通知。登录成功后进入 `sign --cron ...`，启动时不会立即签到。容器内会话路径固定为 `/data/session.json`，不挂载卷，不需要持久化会话或提前运行登录命令，删除或重建容器后会话丢弃。
+默认运行 `ghcr.io/nhirsama/easycheck:latest`；需要运行当前源码时使用 `docker compose up -d --build`。启动时直接进入 `sign --cron ...`，不立即登录或签到。每次触发先登录并保存新会话，再查询和签到；登录失败后默认间隔 1 分钟重试 3 次（`EASYCHECK_LOGIN_RETRIES`、`EASYCHECK_LOGIN_RETRY_INTERVAL` 可改），全部失败则跳过本轮，下次触发重新尝试；配置通知渠道时每次失败都会发通知。容器内会话路径固定为 `/data/session.json`，不挂载卷，不需要持久化会话或提前运行登录命令，删除或重建容器后会话丢弃。
 
-通过 `docker compose logs -f` 查看计划和执行结果。修改 `.env` 后运行 `docker compose up -d` 更新容器；会话过期时运行 `docker compose restart` 重新登录。`docker compose down` 停止调度并移除容器。
+通过 `docker compose logs -f` 查看计划和执行结果。修改 `.env` 后运行 `docker compose up -d` 更新容器；每轮自动更新会话，无需因过期而重启。`docker compose down` 停止调度并移除容器。
 
-无人值守启动要求站点未开启登录验证码；开启时仍需交互输入，本配置不自动识别验证码。
+定时自动登录要求站点未开启登录验证码；开启时本轮登录失败并按配置重试，本配置不自动识别验证码。
 
 ## 输出与导出
 
