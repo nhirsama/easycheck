@@ -200,6 +200,7 @@ unset EASYCHECK_PASSWORD
 | --- | --- |
 | `EASYCHECK_TG_BOT_TOKEN` | Telegram Bot Token，须与 Chat ID 一起填写 |
 | `EASYCHECK_TG_CHAT_ID` | Telegram 目标私聊、群组或频道的 Chat ID，也支持频道 `@username` |
+| `EASYCHECK_TG_API_BASE_URL` | 可选，Telegram API 根地址，留空使用 `https://api.telegram.org`；支持反向代理和路径前缀，仅影响 Telegram 通知 |
 | `EASYCHECK_FEISHU_WEBHOOK_URL` | 飞书群自定义机器人的 Webhook 地址，填写后启用飞书通知 |
 | `EASYCHECK_FEISHU_SECRET` | 可选，飞书机器人开启签名校验时填写密钥 |
 | `EASYCHECK_NOTIFY_TIMEOUT` | 每个通知 HTTP 请求的超时，默认 `10s`，须大于零；独立于站点请求的 `--timeout` |
@@ -209,12 +210,21 @@ unset EASYCHECK_PASSWORD
 ```dotenv
 EASYCHECK_TG_BOT_TOKEN='your-bot-token'
 EASYCHECK_TG_CHAT_ID='-1001234567890'
+EASYCHECK_TG_API_BASE_URL=''
 EASYCHECK_FEISHU_WEBHOOK_URL='https://open.feishu.cn/open-apis/bot/v2/hook/your-webhook-id'
 EASYCHECK_FEISHU_SECRET=''
 EASYCHECK_NOTIFY_TIMEOUT=10s
 ```
 
 Telegram 通过 BotFather 创建机器人并取得 Token，目标会话需允许机器人发言；首次私聊先向机器人发送 `/start`。飞书使用群自定义机器人 Webhook；启用签名校验时填写对应密钥，程序自动生成时间戳与 HMAC-SHA256 签名。若飞书启用了关键词校验，可将 `EasyCheck` 设为允许关键词。
+
+Telegram 反向代理示例：
+
+```dotenv
+EASYCHECK_TG_API_BASE_URL='https://tg.example.com'
+```
+
+程序会请求 `https://tg.example.com/bot<TOKEN>/sendMessage`，由反向代理转发至 Telegram API，保持 POST 方法、JSON 请求体和响应格式不变。根地址也可包含路径前缀，例如 `https://example.com/telegram/`，请求路径为 `/telegram/bot<TOKEN>/sendMessage`；末尾斜杠自动处理。填写 HTTP(S) 根地址，不含用户信息、查询参数或片段，无需填写 Bot Token 或方法名。此配置仅在启用 Telegram 通知时校验，不影响站点请求或飞书通知。
 
 本机运行须先将配置导出到环境（见本文公共选项中的 `.env` 导出方式），再执行 `./easycheck sign --cron '*/5 * * * *'`；Compose 自动传入这些配置，修改 `.env` 后运行 `docker compose up -d` 生效。配置在登录或 cron 启动时读取并校验，填写不完整或超时无效会返回错误；其他非 cron 命令不读取通知配置。
 

@@ -52,8 +52,16 @@ func notifierFromEnv() (*resultNotifier, error) {
 		if strings.ContainsAny(token, "/?#\\ \t\r\n") {
 			return nil, errors.New("EASYCHECK_TG_BOT_TOKEN 含有无效字符")
 		}
+		baseURL := strings.TrimSpace(os.Getenv("EASYCHECK_TG_API_BASE_URL"))
+		if baseURL == "" {
+			baseURL = "https://api.telegram.org"
+		}
+		parsed, err := url.Parse(baseURL)
+		if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || strings.ContainsAny(baseURL, "?#") {
+			return nil, errors.New("EASYCHECK_TG_API_BASE_URL 须为不含用户信息、查询参数或片段的有效 HTTP(S) 根地址")
+		}
 		channels = append(channels, notificationChannel{
-			name: telegramChannel, endpoint: "https://api.telegram.org/bot" + url.PathEscape(token) + "/sendMessage", chatID: chatID,
+			name: telegramChannel, endpoint: strings.TrimRight(baseURL, "/") + "/bot" + url.PathEscape(token) + "/sendMessage", chatID: chatID,
 		})
 	}
 	if webhook != "" {

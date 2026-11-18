@@ -62,6 +62,8 @@ go run . sign --cron '*/5 * * * *'
 ```dotenv
 EASYCHECK_TG_BOT_TOKEN='your-bot-token'
 EASYCHECK_TG_CHAT_ID='your-chat-id'
+# 可选：Telegram API 反向代理根地址；留空使用官方地址。
+EASYCHECK_TG_API_BASE_URL=''
 EASYCHECK_FEISHU_WEBHOOK_URL='https://open.feishu.cn/open-apis/bot/v2/hook/your-webhook-id'
 # 飞书机器人启用签名校验时填写，否则留空。
 EASYCHECK_FEISHU_SECRET=''
@@ -69,6 +71,8 @@ EASYCHECK_NOTIFY_TIMEOUT=10s
 ```
 
 登录失败后默认间隔 1 分钟重试，最多重试 3 次（首次尝试之外）；可通过 `EASYCHECK_LOGIN_RETRIES` 和 `EASYCHECK_LOGIN_RETRY_INTERVAL` 修改，设重试次数为 `0` 可关闭。配置渠道后每次登录失败都会通知。cron 每轮有签到成功或失败时，各渠道发送一次结果汇总；全部失败或部分成功都会通知，没有任务或仅跳过时不通知。通知失败只记录日志，不中断后续重试或调度，不重试签到。不带 `--cron` 的手动签到不发通知。
+
+Telegram 需要反向代理时，将 `EASYCHECK_TG_API_BASE_URL` 设为 `https://tg.example.com`，程序自动追加 `/bot<TOKEN>/sendMessage`；支持路径前缀，例如 `https://example.com/telegram`。
 
 Compose 会传入这些变量；本机 CLI 需先导出到环境中。飞书签名等渠道配置见 [通知说明](docs/CLI.md#结果通知)。
 
