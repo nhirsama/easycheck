@@ -106,6 +106,41 @@ func TestLoginDiscoversAndRefreshesPublicKey(t *testing.T) {
 	}
 }
 
+func TestFetchLoginPublicKeyWebpackFullHash(t *testing.T) {
+	const (
+		entry = "/app/assets/app.js"
+		chunk = "/app/assets/js/chunk/926.0123456789abcdefabcd.js"
+	)
+	var requests []string
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/app/":
+			return keyResourceResponse(r, http.StatusOK, `<script defer src="assets/app.js"></script>`), nil
+		case entry:
+			return keyResourceResponse(r, http.StatusOK, `
+var routes=[{url:"/mobile/login",component:o.lazy(function(){return n.e(926).then(n.bind(n,22926))})}];
+t.h=function(){return"dec0"};
+s.u=function(e){return 740===e?"js/vender/vendor.js":"js/chunk/"+e+"."+s.h()+".js"};
+s.h=function(){return"0123456789abcdefabcd"};
+`), nil
+		case chunk:
+			return keyResourceResponse(r, http.StatusOK, fmt.Sprintf(`n.setPublicKey("%s")`, fixturePublicKey)), nil
+		default:
+			return keyResourceResponse(r, http.StatusNotFound, ""), nil
+		}
+	})
+	client, err := NewClient(Config{BaseURL: "https://example.invalid/app/", HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.FetchLoginPublicKey(context.Background())
+	want := []string{"GET /app/", "GET " + entry, "GET " + chunk}
+	if err != nil || got != fixturePublicKey || !reflect.DeepEqual(requests, want) {
+		t.Fatalf("key discovery: requests=%v want=%v err=%v", requests, want, err)
+	}
+}
+
 func TestExtractLoginPublicKeyFormats(t *testing.T) {
 	key, err := parseLoginPublicKey(fixturePublicKey)
 	if err != nil {
@@ -155,7 +190,7 @@ func TestLoginKeyDiscoveryFailures(t *testing.T) {
 		"missing":         {page: "<html></html>", pageStatus: 200},
 		"invalid":         {page: `n.setPublicKey("invalid key")`, pageStatus: 200},
 		"ambiguous":       {page: fmt.Sprintf(`n.setPublicKey("%s");n.setPublicKey("%s")`, fixturePublicKey, otherKey), pageStatus: 200},
-		"script failure":  {page: `<script src="login.js"></script>`, pageStatus: 200, scriptStatus: 404},
+		"script failure":  {page: `<script src="login.js?v=build-token"></script>`, pageStatus: 200, scriptStatus: 404},
 		"script redirect": {page: `<script src="login.js"></script>`, pageStatus: 200, scriptStatus: 307},
 		"entry failure":   {pageStatus: 503},
 	} {
@@ -184,6 +219,13 @@ func TestLoginKeyDiscoveryFailures(t *testing.T) {
 			if tc.pageStatus == http.StatusOK {
 				if !errors.Is(err, ErrLoginPublicKeyNotFound) {
 					t.Fatalf("missing discovery error: %v", err)
+				}
+				if tc.scriptStatus == http.StatusNotFound {
+					var apiErr *APIError
+					if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusNotFound ||
+						!strings.Contains(err.Error(), "/app/login.js") || strings.Contains(err.Error(), "build-token") {
+						t.Fatalf("missing script path/status or leaked query: %v", err)
+					}
 				}
 			} else {
 				var apiErr *APIError

@@ -15,6 +15,7 @@ import (
 const (
 	maxKeyResources     = 16
 	maxKeyResourceBytes = 16 << 20
+	jsIdentifier        = `[a-zA-Z_$][\w$]*`
 )
 
 var (
@@ -26,10 +27,14 @@ var (
 	loginRoutePattern     = regexp.MustCompile(`(?s)\b(?:url|path)\s*:\s*["']/mobile/login["'][^}]{0,1000}`)
 	chunkIDPattern        = regexp.MustCompile(`\.e\(\s*(\d+)\s*\)`)
 	chunkTemplatePattern  = regexp.MustCompile(`["']([^"'\s]+)["']\s*\+\s*[a-zA-Z_$][\w$]*\s*\+\s*["']([^"'\s]*\.js)["']`)
+
+	webpackFullHashPattern    = regexp.MustCompile(`(` + jsIdentifier + `)\.h\s*=\s*function\s*\(\s*\)\s*\{\s*return\s*["']([a-zA-Z0-9_-]{1,128})["']\s*;?\s*\}`)
+	webpackHashedChunkPattern = regexp.MustCompile(`(` + jsIdentifier + `)\.u\s*=\s*function\s*\(\s*(` + jsIdentifier + `)\s*\)\s*\{\s*return\s*[^{};]*?` +
+		`["']([^"'\s]*)["']\s*\+\s*(` + jsIdentifier + `)\s*\+\s*["']\.["']\s*\+\s*(` + jsIdentifier + `)\.h\s*\(\s*\)\s*\+\s*["']\.js["']`)
 )
 
 // FetchLoginPublicKey 读取移动登录页面及其同站点脚本，返回 Base64 DER/SPKI RSA 公钥。
-// 支持页面内联公钥、静态脚本引用以及登录路由的 Webpack 数字分包。
+// 支持页面内联公钥、静态脚本引用以及带或不带构建哈希的 Webpack 数字分包。
 func (c *Client) FetchLoginPublicKey(ctx context.Context) (string, error) {
 	page, err := c.request(ctx, "读取登录页面", http.MethodGet, "", nil, "", false, nil)
 	if err != nil {
@@ -52,7 +57,7 @@ func (c *Client) FetchLoginPublicKey(ctx context.Context) (string, error) {
 				if ctx.Err() != nil {
 					return "", ctx.Err()
 				}
-				lastError = err
+				lastError = fmt.Errorf("%s：%w", resource.url.EscapedPath(), err)
 				continue
 			}
 			total += len(resource.body)
@@ -117,15 +122,44 @@ func extractLoginPublicKey(source []byte) (string, error) {
 	return result, nil
 }
 
-func loginScriptReferences(source []byte) []string {
-	var result []string
+func loginChunkReferences(source []byte) []string {
+	var ids [][]byte
 	for _, route := range loginRoutePattern.FindAll(source, -1) {
 		for _, id := range chunkIDPattern.FindAllSubmatch(route, -1) {
-			for _, template := range chunkTemplatePattern.FindAllSubmatch(source, -1) {
-				result = append(result, string(template[1])+string(id[1])+string(template[2]))
-			}
+			ids = append(ids, id[1])
 		}
 	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// Webpack 的 .u() 可能通过同一运行时的 .h() 拼出 chunk 文件名。
+	// 从当前脚本读取构建哈希，不用入口文件名猜测，也不执行 JavaScript。
+	hashes := make(map[string]string)
+	for _, match := range webpackFullHashPattern.FindAllSubmatch(source, -1) {
+		hashes[string(match[1])] = string(match[2])
+	}
+	var templates [][2]string
+	for _, match := range webpackHashedChunkPattern.FindAllSubmatch(source, -1) {
+		runtime, parameter, prefix, chunkID, hashRuntime := string(match[1]), string(match[2]), string(match[3]), string(match[4]), string(match[5])
+		if hash := hashes[runtime]; hash != "" && parameter == chunkID && runtime == hashRuntime {
+			templates = append(templates, [2]string{prefix, "." + hash + ".js"})
+		}
+	}
+	for _, match := range chunkTemplatePattern.FindAllSubmatch(source, -1) {
+		templates = append(templates, [2]string{string(match[1]), string(match[2])})
+	}
+	var result []string
+	for _, id := range ids {
+		for _, template := range templates {
+			result = append(result, template[0]+string(id)+template[1])
+		}
+	}
+	return result
+}
+
+func loginScriptReferences(source []byte) []string {
+	result := loginChunkReferences(source)
 	var scripts []string
 	for _, tag := range scriptTagPattern.FindAll(source, -1) {
 		if match := scriptSourcePattern.FindSubmatch(tag); match != nil {
