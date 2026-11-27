@@ -22,6 +22,8 @@ func taskCLIFixture(t *testing.T, handler http.HandlerFunc) (string, string) {
 	t.Helper()
 	// 测试绝不使用运行者环境中的真实通知渠道。
 	clearNotificationEnv(t)
+	t.Setenv("EASYCHECK_USERNAME", "")
+	t.Setenv("EASYCHECK_PASSWORD", "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "fixture-token" || r.Header.Get("loginUserId") != "fixture-user" || r.Header.Get("loginUserOrgId") != "fixture-org" {
 			t.Error("missing session identity or wrong request method")

@@ -20,7 +20,7 @@ import (
 
 func clearNotificationEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"EASYCHECK_TG_BOT_TOKEN", "EASYCHECK_TG_CHAT_ID", "EASYCHECK_FEISHU_WEBHOOK_URL", "EASYCHECK_FEISHU_SECRET", "EASYCHECK_NOTIFY_TIMEOUT"} {
+	for _, key := range []string{"EASYCHECK_TG_BOT_TOKEN", "EASYCHECK_TG_CHAT_ID", "EASYCHECK_TG_API_BASE_URL", "EASYCHECK_FEISHU_WEBHOOK_URL", "EASYCHECK_FEISHU_SECRET", "EASYCHECK_NOTIFY_TIMEOUT"} {
 		t.Setenv(key, "")
 	}
 }
@@ -60,6 +60,105 @@ func TestCronNotifierFromEnv(t *testing.T) {
 				t.Fatalf("single channel failed: %v", err)
 			}
 		})
+	}
+}
+
+func TestTelegramAPIBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, baseURL, wantBase string
+	}{
+		{"default", "", "https://api.telegram.org"},
+		{"blank", " \t ", "https://api.telegram.org"},
+		{"custom host", "https://tg.example.invalid", "https://tg.example.invalid"},
+		{"trailing slash", "https://tg.example.invalid/", "https://tg.example.invalid"},
+		{"path prefix", " https://tg.example.invalid/telegram/// ", "https://tg.example.invalid/telegram"},
+		{"HTTP and port", "http://localhost:8081/api/", "http://localhost:8081/api"},
+		{"escaped path", "https://tg.example.invalid/my%20proxy/", "https://tg.example.invalid/my%20proxy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearNotificationEnv(t)
+			t.Setenv("EASYCHECK_TG_BOT_TOKEN", "123:fixture-token")
+			t.Setenv("EASYCHECK_TG_CHAT_ID", "-100123")
+			t.Setenv("EASYCHECK_TG_API_BASE_URL", tc.baseURL)
+			n, err := notifierFromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := n.channels[0].endpoint, tc.wantBase+"/bot123:fixture-token/sendMessage"; got != want {
+				t.Fatalf("endpoint = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestTelegramAPIBaseURLRejectsInvalidEnv(t *testing.T) {
+	for _, baseURL := range []string{
+		"fixture-secret", "//fixture-secret", "https:///fixture-secret", "file:///fixture-secret",
+		"https://user:fixture-secret@example.invalid/", "https://example.invalid/?key=fixture-secret",
+		"https://example.invalid/#fixture-secret", "https://example.invalid/%fixture-secret",
+		"https://example.invalid:fixture-secret/", "https://fixture-secret.invalid/?", "https://fixture-secret.invalid/#",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			clearNotificationEnv(t)
+			t.Setenv("EASYCHECK_TG_BOT_TOKEN", "123:fixture-token")
+			t.Setenv("EASYCHECK_TG_CHAT_ID", "123")
+			t.Setenv("EASYCHECK_TG_API_BASE_URL", baseURL)
+			_, err := notifierFromEnv()
+			if err == nil || !strings.Contains(err.Error(), "EASYCHECK_TG_API_BASE_URL") || strings.Contains(err.Error(), "fixture-secret") {
+				t.Fatalf("invalid base URL accepted or secret leaked: %v", err)
+			}
+		})
+	}
+}
+
+func TestTelegramAPIBaseURLIgnoredWhenTelegramDisabled(t *testing.T) {
+	clearNotificationEnv(t)
+	t.Setenv("EASYCHECK_TG_API_BASE_URL", "invalid-unused-url")
+	n, err := notifierFromEnv()
+	if err != nil || n != nil {
+		t.Fatalf("base URL alone must not enable notifications: %v", err)
+	}
+	t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", "https://example.invalid/feishu")
+	n, err = notifierFromEnv()
+	if err != nil || n == nil || len(n.channels) != 1 || n.channels[0].name != feishuChannel {
+		t.Fatalf("unused Telegram base URL affected Feishu: %v", err)
+	}
+}
+
+func TestTelegramNotificationUsesCustomAPIBaseURL(t *testing.T) {
+	clearNotificationEnv(t)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/telegram/bot123:fixture-token/sendMessage" || r.URL.RawQuery != "" || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			t.Error("wrong custom Telegram API request")
+		}
+		var payload struct {
+			ChatID string `json:"chat_id"`
+			Text   string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.ChatID != "-100123" || payload.Text != "测试通知" {
+			t.Errorf("wrong Telegram payload: %+v (%v)", payload, err)
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+	t.Setenv("EASYCHECK_TG_BOT_TOKEN", "123:fixture-token")
+	t.Setenv("EASYCHECK_TG_CHAT_ID", "-100123")
+	t.Setenv("EASYCHECK_TG_API_BASE_URL", server.URL+"/telegram/")
+	t.Setenv("EASYCHECK_FEISHU_WEBHOOK_URL", "https://example.invalid/feishu")
+	n, err := notifierFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.channels[1].endpoint != "https://example.invalid/feishu" {
+		t.Fatal("custom Telegram API base URL changed Feishu endpoint")
+	}
+	if err := n.send(context.Background(), n.channels[0], "测试通知", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("custom API received %d requests, want 1", calls.Load())
 	}
 }
 

@@ -82,6 +82,9 @@ func TestCronRejectsInvalidOptionsBeforeWaitingOrNetwork(t *testing.T) {
 		{"--cron", "0 8 * * *", "--longitude", "NaN", "--latitude", "20"},
 		{"--cron", "0 8 * * *", "--outside-range"},
 		{"--cron", "0 8 * * *", "--pcid", ""},
+		{"--cron", "0 8 * * *", "--retries", "-1"},
+		{"--cron", "0 8 * * *", "--retry-interval", "0s"},
+		{"--retries", "1"}, {"--retry-interval", "1s"},
 		{"--at", "08:00"}, {"--after", "10m"},
 	} {
 		t.Run(strings.Join(options, " "), func(t *testing.T) {
